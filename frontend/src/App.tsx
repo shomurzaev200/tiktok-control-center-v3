@@ -368,9 +368,10 @@ export default function App() {
               <div className="flex gap-2">
                 <button
                   onClick={async () => {
-                    notify("Готовлю QR. Мёртвые прокси пропускаются, это может занять минуту.");
+                    const name = (accForm.username || "").trim();
+                    notify(name.length > 1 ? `Готовлю QR для ${name}` : "Готовлю QR. Мёртвые прокси пропускаются, это может занять минуту.");
                     try {
-                      const r = await api("/api/accounts/qr-signup", { method: "POST" });
+                      const r = await api("/api/accounts/qr-signup", { method: "POST", body: JSON.stringify({ username: name }) });
                       const d = await r.json();
                       if (!r.ok || d.status !== "qr_ready" || !d.image_base64) {
                         setLoginUi({ mode: "qr-error", message: d.detail || "QR не открылся" });

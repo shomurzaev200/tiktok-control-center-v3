@@ -15,7 +15,7 @@ from app.services.socks_bridge import SocksHttpBridge
 _sessions: dict[int, dict] = {}
 _signups: dict[str, dict] = {}
 _guard = asyncio.Lock()
-_LOGIN_TTL_SEC = 180
+_LOGIN_TTL_SEC = 300
 _proxy_cursor = 0
 _bridges: dict[int, SocksHttpBridge] = {}
 _dead_proxies: set[str] = set()
@@ -424,7 +424,7 @@ async def close_signup(token: str) -> None:
         await _shutdown_handles(sess.get("pw"), sess.get("browser"))
 
 
-async def start_qr_signup() -> dict:
+async def start_qr_signup(target_username: str | None = None) -> dict:
     await _drop_expired()
     await _load_dead_proxies()
     pool = _proxy_pool()
@@ -466,6 +466,7 @@ async def start_qr_signup() -> dict:
                     "created": time.time(),
                     "events": captured,
                     "qr_token": qr_token,
+                    "target_username": (target_username or "").strip() or None,
                 }
             skipped = f" Пропущено мёртвых: {offset}." if offset else ""
             return {
@@ -516,9 +517,11 @@ async def poll_qr_signup(token: str) -> dict:
                     phase = _qr_phase(fresh) or phase
             except Exception:
                 pass
-        if phase == "expired":
+        if phase == "expired" and now - sess.get("created", now) > 45:
             await close_signup(token)
             return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
+        if phase == "expired":
+            phase = None
         logged = await _logged_in(sess["context"], sess["page"])
         if phase in {"confirmed", "success"} and not logged:
             try:
@@ -530,7 +533,9 @@ async def poll_qr_signup(token: str) -> dict:
             if phase == "scanned":
                 return {"status": "waiting_scan", "detail": "Телефон увидел код. Нажми «Это я» в TikTok."}
             return {"status": "waiting_scan", "detail": "Жду, пока ты отсканируешь QR в приложении TikTok"}
-        username = await _read_username(sess["page"])
+        username = (sess.get("target_username") or "").lstrip("@") or await _read_username(sess["page"])
+        if username and not str(username).startswith("@"):
+            username = username
         if not username:
             seen = sess.get("login_seen") or now
             sess["login_seen"] = seen

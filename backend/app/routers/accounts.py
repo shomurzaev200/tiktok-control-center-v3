@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,8 +23,11 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 
 @router.post("/qr-signup")
-async def begin_qr_signup(admin: AdminUser = Depends(require_role("admin"))):
-    return await start_qr_signup()
+async def begin_qr_signup(payload: dict | None = Body(default=None), admin: AdminUser = Depends(require_role("admin"))):
+    target = ""
+    if isinstance(payload, dict):
+        target = str(payload.get("username") or "")
+    return await start_qr_signup(target or None)
 
 
 @router.get("/qr-signup/{token}")
