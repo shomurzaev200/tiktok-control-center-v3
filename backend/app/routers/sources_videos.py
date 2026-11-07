@@ -8,6 +8,7 @@ from app.models import AdminUser, DiscoverySource, TargetVideo
 from app.schemas import SourceCreateSchema, VideoCreateSchema, BulkVideosImportSchema
 from app.security import get_current_admin, require_role, validate_external_url
 from app.services.integration_service import integration_service
+from app.services.source_rotation import normalize_source_value, rotation_view
 
 router = APIRouter(prefix="/api", tags=["sources & videos"])
 
@@ -100,13 +101,22 @@ async def add_video(
     admin: AdminUser = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    existing = await db.scalar(select(TargetVideo).where(TargetVideo.video_url == data.video_url))
+    check = await integration_service.check_video_availability(data.video_url)
+    video_url = check.get("canonical_url") or data.video_url
+    existing = await db.scalar(select(TargetVideo).where(TargetVideo.video_url.in_([data.video_url, video_url])))
+    if existing and existing.video_status == "available" and existing.video_url == video_url:
+        return existing
     if existing:
+        existing.video_url = video_url
+        existing.title = check.get("title") or existing.title
+        existing.author_username = check.get("author_username") or existing.author_username
+        existing.video_status = check.get("video_status", "available")
+        await db.commit()
+        await db.refresh(existing)
         return existing
 
-    check = await integration_service.check_video_availability(data.video_url)
     vid = TargetVideo(
-        video_url=data.video_url,
+        video_url=video_url,
         title=check.get("title"),
         author_username=check.get("author_username"),
         search_keyword=data.search_keyword.strip() if data.search_keyword else None,
@@ -139,20 +149,31 @@ async def bulk_import_videos(
             continue
         seen.add(u)
         try:
-            clean = validate_external_url(u, allowed_hosts={"tiktok.com", "www.tiktok.com", "vm.tiktok.com"})
+            clean = validate_external_url(u, allowed_hosts={"tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"})
         except ValueError:
             invalid += 1
             continue
-        exists = await db.scalar(select(TargetVideo).where(TargetVideo.video_url == clean))
+        check = await integration_service.check_video_availability(clean)
+        video_url = check.get("canonical_url") or clean
+        exists = await db.scalar(select(TargetVideo).where(TargetVideo.video_url.in_([clean, video_url])))
         if exists:
-            skipped += 1
+            if exists.video_status != "available":
+                exists.video_url = video_url
+                exists.video_status = check.get("video_status", "unavailable")
+                exists.title = check.get("title") or exists.title
+                exists.author_username = check.get("author_username") or exists.author_username
+                added += 1
+            else:
+                skipped += 1
             continue
         db.add(
             TargetVideo(
-                video_url=clean,
+                video_url=video_url,
+                title=check.get("title"),
+                author_username=check.get("author_username"),
                 search_keyword=data.search_keyword,
                 source="bulk_import",
-                video_status="available",
+                video_status=check.get("video_status", "unavailable"),
             )
         )
         added += 1

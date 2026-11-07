@@ -69,6 +69,32 @@ class TikTokIntegrationService:
             safe_err = mask_sensitive_text(str(exc))[:80]
             return {"ok": False, "status": f"Ошибка: {safe_err}", "ping_ms": None}
 
+    async def expand_tiktok_url(self, video_url: str) -> str:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            )
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
+                resp = await client.get(video_url)
+                final = str(resp.url)
+                if "/video/" in final:
+                    return final.split("?")[0]
+                text = resp.text[:200000]
+        except Exception:
+            return video_url
+        for marker in ('rel="canonical" href="', "rel='canonical' href='", '"canonical":"'):
+            start = text.find(marker)
+            if start == -1:
+                continue
+            start += len(marker)
+            end = text.find('"' if marker.endswith('"') else "'", start)
+            if end > start and "/video/" in text[start:end]:
+                return text[start:end].split("?")[0]
+        return video_url
+
     async def check_video_availability(self, video_url: str, proxy_url: str | None = None) -> dict:
         """
         Проверяет доступность видео через официальный TikTok oEmbed API.
@@ -76,8 +102,10 @@ class TikTokIntegrationService:
         """
         try:
             clean_url = validate_external_url(
-                video_url, allowed_hosts={"tiktok.com", "www.tiktok.com", "vm.tiktok.com"}
+                video_url,
+                allowed_hosts={"tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"},
             )
+            clean_url = await self.expand_tiktok_url(clean_url)
         except ValueError as ve:
             return {
                 "ok": False,
@@ -96,6 +124,7 @@ class TikTokIntegrationService:
                         return {
                             "ok": True,
                             "video_status": "available",
+                            "canonical_url": clean_url,
                             "title": (data.get("title") or "")[:250],
                             "author_username": (data.get("author_name") or "")[:100],
                             "embed_product_id": str(data.get("embed_product_id") or ""),
