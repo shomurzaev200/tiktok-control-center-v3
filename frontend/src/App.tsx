@@ -402,7 +402,7 @@ export default function App() {
                 </div>
                 <p className="text-sm text-slate-300">{loginUi.message}</p>
                 {(loginUi.mode === "qr" || loginUi.mode === "qr-new") && loginUi.image && (
-                  <img alt="QR TikTok" className="bg-white rounded-lg p-3 w-72 h-72 object-contain" src={`data:image/png;base64,${loginUi.image}`} />
+                  <img alt="QR TikTok" className="bg-white rounded-lg p-2 w-72 h-72 object-contain" src={`data:image/png;base64,${loginUi.image}`} />
                 )}
                 {(loginUi.mode === "qr" || loginUi.mode === "qr-new") && !loginUi.image && (
                   <p className="text-sm text-rose-300">Картинка QR не пришла. Нажми «Добавить сканером» ещё раз.</p>

@@ -162,6 +162,7 @@ async def _launch(proxy_url: str | None):
     context = await browser.new_context(
         proxy=proxy,
         viewport={"width": 1280, "height": 900},
+        device_scale_factor=2,
         locale="ru-RU",
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -169,6 +170,7 @@ async def _launch(proxy_url: str | None):
         ),
     )
     page = await context.new_page()
+    await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return pw, browser, context, page
 
 
@@ -208,35 +210,36 @@ async def _persist(context, username: str) -> None:
 
 
 async def _grab_qr(page) -> str:
-    box = await page.evaluate(
-        """() => {
-          const nodes = [...document.querySelectorAll('canvas, img, [data-e2e="qr-code"]')];
-          let best = null;
-          for (const el of nodes) {
-            const r = el.getBoundingClientRect();
-            if (r.width < 80 || r.height < 80) continue;
-            const area = r.width * r.height;
-            if (!best || area > best.area) {
-              best = {x: r.x, y: r.y, width: r.width, height: r.height, area};
-            }
-          }
-          return best;
-        }"""
-    )
-    if box:
-        try:
+    for _ in range(12):
+        box = await page.evaluate(
+            """() => {
+              const nodes = [...document.querySelectorAll('canvas, img, svg, [data-e2e="qr-code"]')];
+              let best = null;
+              for (const el of nodes) {
+                const r = el.getBoundingClientRect();
+                if (r.width < 140 || r.height < 140) continue;
+                const ratio = r.width / r.height;
+                if (ratio < 0.75 || ratio > 1.35) continue;
+                const area = r.width * r.height;
+                if (!best || area > best.area) {
+                  best = {x: r.x, y: r.y, width: r.width, height: r.height, area};
+                }
+              }
+              return best;
+            }"""
+        )
+        if box and box["width"] >= 140:
             png = await page.screenshot(
                 clip={
-                    "x": max(0, float(box["x"]) - 12),
-                    "y": max(0, float(box["y"]) - 12),
-                    "width": float(box["width"]) + 24,
-                    "height": float(box["height"]) + 24,
+                    "x": max(0, float(box["x"]) - 8),
+                    "y": max(0, float(box["y"]) - 8),
+                    "width": float(box["width"]) + 16,
+                    "height": float(box["height"]) + 16,
                 }
             )
             return base64.b64encode(png).decode()
-        except Exception:
-            pass
-    png = await page.screenshot(clip={"x": 430, "y": 180, "width": 420, "height": 460})
+        await page.wait_for_timeout(1000)
+    png = await page.screenshot(full_page=False)
     return base64.b64encode(png).decode()
 
 
