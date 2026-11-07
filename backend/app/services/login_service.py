@@ -107,21 +107,35 @@ async def _launch(proxy_url: str | None):
     from playwright.async_api import async_playwright
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-    )
-    context = await browser.new_context(
-        proxy=_proxy_for_browser(proxy_url),
-        viewport={"width": 1280, "height": 900},
-        locale="ru-RU",
-        user_agent=(
+    proxy = _proxy_for_browser(proxy_url)
+    # Chromium не умеет SOCKS с логином и паролем. Для таких прокси нужен Firefox.
+    use_firefox = bool(proxy and str(proxy.get("server", "")).startswith("socks") and proxy.get("username"))
+    if use_firefox:
+        browser = await pw.firefox.launch(headless=True)
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0"
+    else:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        user_agent = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        ),
+        )
+    context = await browser.new_context(
+        proxy=proxy,
+        viewport={"width": 1280, "height": 900},
+        locale="ru-RU",
+        user_agent=user_agent,
     )
     page = await context.new_page()
     return pw, browser, context, page
+
+
+def _public_error(exc: Exception) -> str:
+    text = str(exc).splitlines()[0][:180]
+    text = re.sub(r"://[^@\s/]+@", "://", text)
+    return text or exc.__class__.__name__
 
 
 async def _logged_in(context, page) -> bool:
@@ -303,10 +317,11 @@ async def start_qr_signup() -> dict:
             "image_base64": image,
             "detail": f"Прокси {_proxy_label(chosen)}. На телефоне открой TikTok → Профиль → меню ☰ → Сканировать. Следующее нажатие возьмёт следующий прокси.",
         }
-    except Exception:
+    except Exception as exc:
         await _shutdown_handles(pw, browser)
-        await log_event("backend", "WARNING", "qr_signup_failed", "Не удалось открыть QR для нового аккаунта")
-        return {"status": "failed", "detail": "Не удалось открыть QR. Сервер должен открывать tiktok.com."}
+        reason = _public_error(exc)
+        await log_event("backend", "WARNING", "qr_signup_failed", reason)
+        return {"status": "failed", "detail": f"QR не открылся: {reason}"}
 
 
 async def poll_qr_signup(token: str) -> dict:
