@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -49,9 +49,11 @@ export default function App() {
   const [adminForm, setAdminForm] = useState({ username: "", password: "", role: "admin" });
   const [pwForm, setPwForm] = useState({ current_password: "", new_password: "" });
 
+  const toastTimer = useRef<number | null>(null);
   const notify = (msg: string, type: "err" | "ok" = "ok") => {
     setToast({ type, msg });
-    setTimeout(() => setToast(null), 4500);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 30000);
   };
 
   const api = useCallback(async (url: string, opts: any = {}) => {
