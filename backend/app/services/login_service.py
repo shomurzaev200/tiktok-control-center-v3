@@ -894,27 +894,31 @@ async def manual_type(text: str) -> str:
         return "вход не запущен"
     page = _manual["page"]
     value = text[:200]
-    result = await page.evaluate(
-        """(value) => {
-          const visible = [...document.querySelectorAll('input')].filter((el) => {
-            const r = el.getBoundingClientRect();
-            const style = getComputedStyle(el);
-            return r.width > 40 && r.height > 8 && style.visibility !== 'hidden' && style.display !== 'none';
-          });
-          const input = visible.find((el) => el.type === 'password') || visible[visible.length - 1];
-          if (!input) return 'поле не найдено';
-          input.focus();
-          const proto = Object.getPrototypeOf(input);
-          const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-          if (desc && desc.set) desc.set.call(input, value);
-          else input.value = value;
-          input.dispatchEvent(new Event('input', {bubbles: true}));
-          input.dispatchEvent(new Event('change', {bubbles: true}));
-          return 'записано ' + input.value.length + ' символов';
-        }""",
-        value,
-    )
-    return str(result)
+    for frame in page.frames:
+        field = frame.locator(
+            'input[type="password"], input[placeholder*="ароль" i], input[name="password"]'
+        ).last
+        try:
+            if not await field.count():
+                continue
+            await field.click(timeout=3000)
+            await field.fill("")
+            await field.press_sequentially(value, delay=35)
+            return f"записано {len(value)} символов"
+        except Exception:
+            continue
+    return "поле не найдено"
+
+
+async def manual_pick(choice: str) -> str:
+    if not _manual:
+        return "вход не запущен"
+    label = "Пароль" if choice == "password" else "почта"
+    try:
+        await _manual["page"].get_by_text(label, exact=False).last.click(timeout=4000)
+        return f"открыл: {label}"
+    except Exception:
+        return "кнопка подтверждения не найдена"
 
 
 async def manual_show_password() -> str:

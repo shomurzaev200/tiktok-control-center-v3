@@ -474,6 +474,18 @@ export default function App() {
                         setManualText("");
                       }}>Ввести</button>
                       <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={async () => {
+                        const r = await api("/api/accounts/manual-login/pick", { method: "POST", body: JSON.stringify({ choice: "email" }) });
+                        const d = await r.json();
+                        if (d.detail) notify(d.detail);
+                        if (d.image_base64) setLoginUi((prev: any) => prev ? { ...prev, image: d.image_base64, message: d.detail || prev.message } : prev);
+                      }}>Подтвердить почтой</button>
+                      <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={async () => {
+                        const r = await api("/api/accounts/manual-login/pick", { method: "POST", body: JSON.stringify({ choice: "password" }) });
+                        const d = await r.json();
+                        if (d.detail) notify(d.detail);
+                        if (d.image_base64) setLoginUi((prev: any) => prev ? { ...prev, image: d.image_base64, message: d.detail || prev.message } : prev);
+                      }}>Подтвердить паролем</button>
+                      <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={async () => {
                         const r = await api("/api/accounts/manual-login/show", { method: "POST" });
                         const d = await r.json();
                         if (d.detail) notify(d.detail, d.detail === "показываю пароль" ? "ok" : "err");
