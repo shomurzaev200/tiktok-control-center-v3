@@ -210,36 +210,47 @@ async def _persist(context, username: str) -> None:
 
 
 async def _grab_qr(page) -> str:
-    for _ in range(12):
-        box = await page.evaluate(
-            """() => {
-              const nodes = [...document.querySelectorAll('canvas, img, svg, [data-e2e="qr-code"]')];
-              let best = null;
-              for (const el of nodes) {
-                const r = el.getBoundingClientRect();
-                if (r.width < 140 || r.height < 140) continue;
-                const ratio = r.width / r.height;
-                if (ratio < 0.75 || ratio > 1.35) continue;
-                const area = r.width * r.height;
-                if (!best || area > best.area) {
-                  best = {x: r.x, y: r.y, width: r.width, height: r.height, area};
-                }
-              }
-              return best;
-            }"""
-        )
-        if box and box["width"] >= 140:
-            png = await page.screenshot(
-                clip={
-                    "x": max(0, float(box["x"]) - 8),
-                    "y": max(0, float(box["y"]) - 8),
-                    "width": float(box["width"]) + 16,
-                    "height": float(box["height"]) + 16,
-                }
-            )
-            return base64.b64encode(png).decode()
+    script = """() => {
+      const found = [];
+      const visit = (root) => {
+        if (!root || !root.querySelectorAll) return;
+        for (const el of root.querySelectorAll('*')) {
+          if (el.shadowRoot) visit(el.shadowRoot);
+          const r = el.getBoundingClientRect();
+          if (r.width < 72 || r.height < 72 || r.width > 460 || r.height > 460) continue;
+          const ratio = r.width / r.height;
+          if (ratio < 0.82 || ratio > 1.18) continue;
+          found.push({x: r.x, y: r.y, width: r.width, height: r.height, area: r.width * r.height});
+        }
+      };
+      visit(document);
+      if (!found.length) return null;
+      found.sort((a, b) => b.area - a.area);
+      return found[0];
+    }"""
+    box = None
+    for _ in range(15):
+        box = await page.evaluate(script)
+        if box and box["width"] >= 120:
+            break
         await page.wait_for_timeout(1000)
-    png = await page.screenshot(full_page=False)
+    if not box:
+        view = page.viewport_size or {"width": 1280, "height": 900}
+        side = 420
+        box = {
+            "x": max(0, (view["width"] - side) / 2),
+            "y": max(0, (view["height"] - side) / 2 - 40),
+            "width": side,
+            "height": side,
+        }
+    png = await page.screenshot(
+        clip={
+            "x": max(0, float(box["x"]) - 6),
+            "y": max(0, float(box["y"]) - 6),
+            "width": float(box["width"]) + 12,
+            "height": float(box["height"]) + 12,
+        }
+    )
     return base64.b64encode(png).decode()
 
 
