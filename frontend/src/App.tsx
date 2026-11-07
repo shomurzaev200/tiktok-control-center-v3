@@ -467,7 +467,9 @@ export default function App() {
                       <input placeholder="Текст в выбранное поле" value={manualText} onChange={e => setManualText(e.target.value)} className={inp} />
                       <button type="button" className={btn} onClick={async () => {
                         if (!manualText) return;
-                        await api("/api/accounts/manual-login/type", { method: "POST", body: JSON.stringify({ text: manualText }) });
+                        const r = await api("/api/accounts/manual-login/type", { method: "POST", body: JSON.stringify({ text: manualText }) });
+                        const d = await r.json();
+                        if (d.image_base64) setLoginUi((prev: any) => prev ? { ...prev, image: d.image_base64 } : prev);
                         setManualText("");
                       }}>Ввести</button>
                       <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={() => api("/api/accounts/manual-login/key", { method: "POST", body: JSON.stringify({ key: "Enter" }) })}>Enter</button>

@@ -883,7 +883,18 @@ async def manual_click(x: float, y: float) -> None:
 async def manual_type(text: str) -> None:
     if not _manual:
         return
-    await _manual["page"].keyboard.type(text[:200], delay=30)
+    page = _manual["page"]
+    value = text[:200]
+    password = page.locator('input[type="password"]').last
+    if await password.count() and await password.is_visible():
+        await password.click()
+        await password.fill(value)
+        return
+    focused = page.locator("input:focus, textarea:focus").first
+    if await focused.count():
+        await focused.fill(value)
+        return
+    await page.keyboard.type(value, delay=30)
 
 
 async def manual_key(key: str) -> None:

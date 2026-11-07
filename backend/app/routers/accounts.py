@@ -93,7 +93,13 @@ async def manual_login_click(payload: dict = Body(...), admin: AdminUser = Depen
 @router.post("/manual-login/type")
 async def manual_login_type(payload: dict = Body(...), admin: AdminUser = Depends(require_role("admin"))):
     await manual_type(str(payload.get("text") or ""))
-    return {"ok": True}
+    image = ""
+    try:
+        from app.services.login_service import _manual_image
+        image = await _manual_image()
+    except Exception:
+        image = ""
+    return {"ok": True, "image_base64": image}
 
 
 @router.post("/manual-login/key")
