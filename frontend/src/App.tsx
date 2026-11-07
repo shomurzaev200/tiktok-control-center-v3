@@ -36,6 +36,7 @@ export default function App() {
   });
   const [loginUi, setLoginUi] = useState<any>(null);
   const [loginCode, setLoginCode] = useState("");
+  const [manualText, setManualText] = useState("");
   const [srcForm, setSrcForm] = useState({ source_type: "main_likes", value: "", interval_minutes: 30 });
   const [vidFilter, setVidFilter] = useState({ search: "", status: "" });
   const [vidForm, setVidForm] = useState({ video_url: "", search_keyword: "" });
@@ -150,6 +151,27 @@ export default function App() {
     }, 2000);
     return () => clearInterval(timer);
   }, [loginUi, api]);
+
+  useEffect(() => {
+    if (!loginUi || loginUi.mode !== "manual") return;
+    const timer = setInterval(async () => {
+      const r = await api("/api/accounts/manual-login");
+      const data = await r.json();
+      if (data.status === "authenticated") {
+        notify(`Аккаунт ${data.username} вошёл`);
+        setLoginUi(null);
+        loadData();
+        return;
+      }
+      if (data.status === "failed" || data.status === "idle") {
+        notify(data.detail || "Ручной вход закрыт", "err");
+        setLoginUi(null);
+        return;
+      }
+      setLoginUi((prev: any) => prev && prev.mode === "manual" ? { ...prev, image: data.image_base64 || prev.image, message: data.detail || prev.message } : prev);
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [loginUi?.mode, api]);
 
   useEffect(() => {
     if (!user) return;
@@ -372,6 +394,24 @@ export default function App() {
               <div className="flex gap-2">
                 <button
                   onClick={async () => {
+                    notify("Открываю страницу входа TikTok. Это занимает до минуты.");
+                    try {
+                      const r = await api("/api/accounts/manual-login", { method: "POST" });
+                      const d = await r.json();
+                      if (!r.ok || d.status !== "ready" || !d.image_base64) {
+                        return notify(d.detail || "Страница не открылась", "err");
+                      }
+                      setLoginUi({ mode: "manual", message: d.detail, image: d.image_base64 });
+                    } catch {
+                      notify("Сервер не успел открыть TikTok", "err");
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg bg-slate-800 text-sm"
+                >
+                  Войти вручную
+                </button>
+                <button
+                  onClick={async () => {
                     const name = (accForm.username || "").trim();
                     notify(name.length > 1 ? `Готовлю QR для ${name}` : "Готовлю QR. Мёртвые прокси пропускаются, это может занять минуту.");
                     try {
@@ -401,11 +441,51 @@ export default function App() {
               <div className={`${card} border-cyan-500/40 space-y-3`}>
                 <div className="flex justify-between">
                   <h3 className="font-bold text-cyan-400">
-                    {loginUi.mode === "qr-new" ? "Сканер: добавление аккаунта" : loginUi.mode === "qr-error" ? "Сканер: QR не открылся" : `Вход в аккаунт #${loginUi.id}`}
+                    {loginUi.mode === "qr-new" ? "Сканер: добавление аккаунта" : loginUi.mode === "manual" ? "Ручной вход в TikTok" : loginUi.mode === "qr-error" ? "Сканер: QR не открылся" : `Вход в аккаунт #${loginUi.id}`}
                   </h3>
-                  <button onClick={() => setLoginUi(null)} className="text-xs text-slate-400">✕ Закрыть</button>
+                  <button onClick={async () => {
+                    if (loginUi?.mode === "manual") await api("/api/accounts/manual-login", { method: "DELETE" });
+                    setLoginUi(null);
+                  }} className="text-xs text-slate-400">✕ Закрыть</button>
                 </div>
                 <p className="text-sm text-slate-300">{loginUi.message}</p>
+                {loginUi.mode === "manual" && loginUi.image && (
+                  <div className="space-y-2">
+                    <img
+                      alt="Страница входа TikTok"
+                      className="bg-white rounded-lg max-w-full cursor-crosshair"
+                      src={`data:image/png;base64,${loginUi.image}`}
+                      onClick={async (e) => {
+                        const img = e.currentTarget;
+                        const rect = img.getBoundingClientRect();
+                        const x = (e.clientX - rect.left) * (img.naturalWidth / rect.width);
+                        const y = (e.clientY - rect.top) * (img.naturalHeight / rect.height);
+                        await api("/api/accounts/manual-login/click", { method: "POST", body: JSON.stringify({ x, y }) });
+                      }}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <input placeholder="Текст в выбранное поле" value={manualText} onChange={e => setManualText(e.target.value)} className={inp} />
+                      <button type="button" className={btn} onClick={async () => {
+                        if (!manualText) return;
+                        await api("/api/accounts/manual-login/type", { method: "POST", body: JSON.stringify({ text: manualText }) });
+                        setManualText("");
+                      }}>Ввести</button>
+                      <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={() => api("/api/accounts/manual-login/key", { method: "POST", body: JSON.stringify({ key: "Enter" }) })}>Enter</button>
+                      <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={() => api("/api/accounts/manual-login/key", { method: "POST", body: JSON.stringify({ key: "Backspace" }) })}>Стереть</button>
+                      <button type="button" className={btn} onClick={async () => {
+                        const r = await api("/api/accounts/manual-login");
+                        const d = await r.json();
+                        if (d.status === "authenticated") {
+                          notify(`Аккаунт ${d.username} вошёл`);
+                          setLoginUi(null);
+                          loadData();
+                        } else {
+                          notify(d.detail || "Вход ещё не виден", "err");
+                        }
+                      }}>Я вошёл</button>
+                    </div>
+                  </div>
+                )}
                 {(loginUi.mode === "qr" || loginUi.mode === "qr-new") && loginUi.image && (
                   <img alt="QR TikTok" className="bg-white rounded-lg p-2 w-72 h-72 object-contain" src={`data:image/png;base64,${loginUi.image}`} />
                 )}

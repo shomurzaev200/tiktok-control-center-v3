@@ -11,8 +11,14 @@ from app.security import (
 )
 from app.services.integration_service import integration_service
 from app.services.login_service import (
+    close_manual_login,
+    manual_click,
+    manual_key,
+    manual_type,
+    poll_manual_login,
     poll_qr_login,
     poll_qr_signup,
+    start_manual_login,
     start_password_login,
     start_qr_login,
     start_qr_signup,
@@ -50,6 +56,56 @@ async def watch_qr_signup(
         await db.refresh(acc)
         result["account_id"] = acc.id
     return result
+
+
+async def _store_login(db: AsyncSession, result: dict) -> dict:
+    username = result.get("username")
+    if result.get("status") == "authenticated" and username:
+        acc = await db.scalar(select(TikTokAccount).where(TikTokAccount.username == username))
+        if acc:
+            acc.auth_state = "authenticated"
+            acc.is_active = True
+        else:
+            acc = TikTokAccount(username=username, auth_state="authenticated", is_active=True)
+            db.add(acc)
+        await db.commit()
+        await db.refresh(acc)
+        result["account_id"] = acc.id
+    return result
+
+
+@router.post("/manual-login")
+async def begin_manual_login(admin: AdminUser = Depends(require_role("admin"))):
+    return await start_manual_login()
+
+
+@router.get("/manual-login")
+async def watch_manual_login(admin: AdminUser = Depends(require_role("admin")), db: AsyncSession = Depends(get_db)):
+    return await _store_login(db, await poll_manual_login())
+
+
+@router.post("/manual-login/click")
+async def manual_login_click(payload: dict = Body(...), admin: AdminUser = Depends(require_role("admin"))):
+    await manual_click(float(payload.get("x") or 0), float(payload.get("y") or 0))
+    return {"ok": True}
+
+
+@router.post("/manual-login/type")
+async def manual_login_type(payload: dict = Body(...), admin: AdminUser = Depends(require_role("admin"))):
+    await manual_type(str(payload.get("text") or ""))
+    return {"ok": True}
+
+
+@router.post("/manual-login/key")
+async def manual_login_key(payload: dict = Body(...), admin: AdminUser = Depends(require_role("admin"))):
+    await manual_key(str(payload.get("key") or ""))
+    return {"ok": True}
+
+
+@router.delete("/manual-login")
+async def end_manual_login(admin: AdminUser = Depends(require_role("admin"))):
+    await close_manual_login()
+    return {"ok": True}
 
 
 def _serialize_account(acc: TikTokAccount) -> dict:

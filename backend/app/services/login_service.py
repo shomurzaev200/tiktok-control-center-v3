@@ -369,6 +369,7 @@ async def _close_other_browsers() -> None:
         await close_signup(token)
     for account_id in account_ids:
         await close_login(account_id)
+    await close_manual_login()
 
 
 async def _image_from_value(page, value: str) -> str | None:
@@ -816,3 +817,103 @@ async def submit_login_code(account_id: int, code: str) -> dict:
     except Exception:
         await close_login(account_id)
         return {"status": "failed", "detail": "Не удалось отправить код. Начни вход заново."}
+
+
+_manual: dict | None = None
+
+
+async def _launch_manual():
+    from playwright.async_api import async_playwright
+
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    )
+    context = await browser.new_context(
+        viewport={"width": 960, "height": 640},
+        locale="ru-RU",
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+    )
+    page = await context.new_page()
+    await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    return pw, browser, context, page
+
+
+async def close_manual_login() -> None:
+    global _manual
+    sess = _manual
+    _manual = None
+    if sess:
+        await _shutdown_handles(sess.get("pw"), sess.get("browser"))
+
+
+async def _manual_image() -> str:
+    png = await _manual["page"].screenshot(type="png")
+    return base64.b64encode(png).decode()
+
+
+async def start_manual_login() -> dict:
+    global _manual
+    await _close_other_browsers()
+    pw = browser = None
+    try:
+        pw, browser, context, page = await _launch_manual()
+        await page.goto("https://www.tiktok.com/login", wait_until="domcontentloaded", timeout=45000)
+        _manual = {"pw": pw, "browser": browser, "context": context, "page": page, "created": time.time()}
+        return {
+            "status": "ready",
+            "image_base64": await _manual_image(),
+            "detail": "Кликни поле на странице, введи логин и пароль ниже. Потом нажми «Я вошёл».",
+        }
+    except Exception as exc:
+        await _shutdown_handles(pw, browser)
+        return {"status": "failed", "detail": f"Страница TikTok не открылась: {_public_error(exc)}"}
+
+
+async def manual_click(x: float, y: float) -> None:
+    if not _manual:
+        return
+    await _manual["page"].mouse.click(max(0, min(959, x)), max(0, min(639, y)))
+
+
+async def manual_type(text: str) -> None:
+    if not _manual:
+        return
+    await _manual["page"].keyboard.type(text[:200], delay=30)
+
+
+async def manual_key(key: str) -> None:
+    if not _manual or key not in {"Enter", "Backspace", "Tab"}:
+        return
+    await _manual["page"].keyboard.press(key)
+
+
+async def poll_manual_login() -> dict:
+    if not _manual:
+        return {"status": "idle", "detail": "Ручной вход не запущен"}
+    page = _manual["page"]
+    try:
+        if await _logged_in(_manual["context"], page):
+            username = await _read_username(page)
+            if not username:
+                return {
+                    "status": "ready",
+                    "image_base64": await _manual_image(),
+                    "detail": "Вход есть, но имя профиля ещё не прочиталось. Нажми «Я вошёл» ещё раз.",
+                }
+            await _persist(_manual["context"], f"@{username}")
+            await close_manual_login()
+            return {"status": "authenticated", "username": f"@{username}", "detail": f"Аккаунт @{username} вошёл"}
+        return {
+            "status": "ready",
+            "image_base64": await _manual_image(),
+            "detail": "Войди на этой странице. Когда TikTok откроет ленту, нажми «Я вошёл».",
+        }
+    except Exception as exc:
+        await close_manual_login()
+        return {"status": "failed", "detail": f"Браузер закрылся: {_public_error(exc)}"}
+
