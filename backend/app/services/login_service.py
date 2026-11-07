@@ -109,15 +109,35 @@ async def _persist(context, username: str) -> None:
 
 
 async def _grab_qr(page) -> str:
-    for selector in ("canvas", "[data-e2e='qr-code']", "img[alt*='QR' i]", "img[src*='qr' i]"):
-        loc = page.locator(selector).first
+    box = await page.evaluate(
+        """() => {
+          const nodes = [...document.querySelectorAll('canvas, img, [data-e2e="qr-code"]')];
+          let best = null;
+          for (const el of nodes) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 80 || r.height < 80) continue;
+            const area = r.width * r.height;
+            if (!best || area > best.area) {
+              best = {x: r.x, y: r.y, width: r.width, height: r.height, area};
+            }
+          }
+          return best;
+        }"""
+    )
+    if box:
         try:
-            if await loc.count():
-                png = await loc.screenshot(timeout=5000)
-                return base64.b64encode(png).decode()
+            png = await page.screenshot(
+                clip={
+                    "x": max(0, float(box["x"]) - 12),
+                    "y": max(0, float(box["y"]) - 12),
+                    "width": float(box["width"]) + 24,
+                    "height": float(box["height"]) + 24,
+                }
+            )
+            return base64.b64encode(png).decode()
         except Exception:
-            continue
-    png = await page.screenshot()
+            pass
+    png = await page.screenshot(clip={"x": 430, "y": 180, "width": 420, "height": 460})
     return base64.b64encode(png).decode()
 
 

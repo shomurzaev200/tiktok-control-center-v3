@@ -369,8 +369,9 @@ export default function App() {
                     notify("Готовлю QR для сканера...");
                     const r = await api("/api/accounts/qr-signup", { method: "POST" });
                     const d = await r.json();
-                    if (!r.ok || d.status !== "qr_ready") return notify(d.detail || "QR не открылся", "err");
+                    if (!r.ok || d.status !== "qr_ready" || !d.image_base64) return notify(d.detail || "QR не открылся", "err");
                     setLoginUi({ mode: "qr-new", token: d.token, message: d.detail, image: d.image_base64 });
+                    notify("QR на экране. Сканируй его в TikTok на телефоне.");
                   }}
                   className={btn}
                 >
@@ -381,26 +382,6 @@ export default function App() {
               </div>
             </div>
 
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const res = await api("/api/accounts", { method: "POST", body: JSON.stringify(accForm) });
-                const data = await res.json();
-                if (!res.ok) return notify(data.detail || "Ошибка сохранения", "err");
-                notify("Аккаунт сохранён. Дальше нажми «Войти» или «QR с телефона».");
-                setAccForm({ ...accForm, username: "@", login_name: "", password: "", proxy_url: "", version: undefined });
-                loadData();
-              }}
-              className={`${card} grid grid-cols-1 md:grid-cols-3 gap-3`}
-            >
-              <input placeholder="@username профиля" value={accForm.username} onChange={e => setAccForm({ ...accForm, username: e.target.value })} className={inp} required />
-              <input placeholder="Логин: почта, телефон или username" value={accForm.login_name} onChange={e => setAccForm({ ...accForm, login_name: e.target.value })} className={inp} />
-              <input type="password" autoComplete="new-password" placeholder="Пароль TikTok" value={accForm.password} onChange={e => setAccForm({ ...accForm, password: e.target.value })} className={inp} />
-              <input placeholder="Прокси (http://user:pass@ip:port)" value={accForm.proxy_url} onChange={e => setAccForm({ ...accForm, proxy_url: e.target.value })} className={inp} />
-              <input type="number" placeholder="Лимит комм/день" value={accForm.daily_comment_limit} onChange={e => setAccForm({ ...accForm, daily_comment_limit: +e.target.value })} className={inp} />
-              <button className={btn}>{accForm.version ? "Обновить аккаунт" : "Сохранить аккаунт"}</button>
-            </form>
-
             {loginUi && (
               <div className={`${card} border-cyan-500/40 space-y-3`}>
                 <div className="flex justify-between">
@@ -410,8 +391,11 @@ export default function App() {
                   <button onClick={() => setLoginUi(null)} className="text-xs text-slate-400">✕ Закрыть</button>
                 </div>
                 <p className="text-sm text-slate-300">{loginUi.message}</p>
-                {loginUi.mode === "qr" && loginUi.image && (
-                  <img alt="QR TikTok" className="bg-white rounded-lg p-2 w-64 h-64 object-contain" src={`data:image/png;base64,${loginUi.image}`} />
+                {(loginUi.mode === "qr" || loginUi.mode === "qr-new") && loginUi.image && (
+                  <img alt="QR TikTok" className="bg-white rounded-lg p-3 w-72 h-72 object-contain" src={`data:image/png;base64,${loginUi.image}`} />
+                )}
+                {(loginUi.mode === "qr" || loginUi.mode === "qr-new") && !loginUi.image && (
+                  <p className="text-sm text-rose-300">Картинка QR не пришла. Нажми «Добавить сканером» ещё раз.</p>
                 )}
                 {loginUi.mode === "code" && (
                   <form
@@ -437,6 +421,26 @@ export default function App() {
                 )}
               </div>
             )}
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const res = await api("/api/accounts", { method: "POST", body: JSON.stringify(accForm) });
+                const data = await res.json();
+                if (!res.ok) return notify(data.detail || "Ошибка сохранения", "err");
+                notify("Аккаунт сохранён. Дальше нажми «Войти» или «QR с телефона».");
+                setAccForm({ ...accForm, username: "@", login_name: "", password: "", proxy_url: "", version: undefined });
+                loadData();
+              }}
+              className={`${card} grid grid-cols-1 md:grid-cols-3 gap-3`}
+            >
+              <input placeholder="@username профиля" value={accForm.username} onChange={e => setAccForm({ ...accForm, username: e.target.value })} className={inp} required />
+              <input placeholder="Логин: почта, телефон или username" value={accForm.login_name} onChange={e => setAccForm({ ...accForm, login_name: e.target.value })} className={inp} />
+              <input type="password" autoComplete="new-password" placeholder="Пароль TikTok" value={accForm.password} onChange={e => setAccForm({ ...accForm, password: e.target.value })} className={inp} />
+              <input placeholder="Прокси (http://user:pass@ip:port)" value={accForm.proxy_url} onChange={e => setAccForm({ ...accForm, proxy_url: e.target.value })} className={inp} />
+              <input type="number" placeholder="Лимит комм/день" value={accForm.daily_comment_limit} onChange={e => setAccForm({ ...accForm, daily_comment_limit: +e.target.value })} className={inp} />
+              <button className={btn}>{accForm.version ? "Обновить аккаунт" : "Сохранить аккаунт"}</button>
+            </form>
 
             {selectedAccount && (
               <div className={`${card} border-cyan-500/40 space-y-2`}>
