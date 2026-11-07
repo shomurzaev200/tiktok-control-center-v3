@@ -526,10 +526,13 @@ export default function App() {
                         </button>
                         <button
                           onClick={async () => {
-                            notify("Готовлю QR...");
+                            notify("Готовлю QR для этого аккаунта...");
                             const r = await api(`/api/accounts/${a.id}/login/qr`, { method: "POST" });
                             const d = await r.json();
-                            if (!r.ok || d.status !== "qr_ready") return notify(d.detail || "QR не открылся", "err");
+                            if (!r.ok || d.status !== "qr_ready" || !d.image_base64) {
+                              setLoginUi({ mode: "qr-error", message: d.detail || "QR не открылся" });
+                              return notify(d.detail || "QR не открылся", "err");
+                            }
                             setLoginUi({ id: a.id, mode: "qr", message: d.detail, image: d.image_base64 });
                           }}
                           className="text-xs px-2 py-1 bg-slate-800 rounded"

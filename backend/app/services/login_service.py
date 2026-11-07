@@ -340,15 +340,28 @@ async def _grab_qr(page) -> str:
     raise RuntimeError("TikTok не прислал QR: на странице только значок загрузки")
 
 
+async def _qr_image(page, captured: list) -> str:
+    for item in captured:
+        value = _extract_qr_value(item)
+        if not value:
+            continue
+        image = await _image_from_value(page, value)
+        if image:
+            return image
+    return await _grab_qr(page)
+
+
 async def start_qr_login(account_id: int, username: str, proxy_url: str | None) -> dict:
     await _drop_expired()
     await close_login(account_id)
     pw = browser = None
     try:
         pw, browser, context, page = await _launch(proxy_url)
-        await page.goto("https://www.tiktok.com/login/qrcode", wait_until="domcontentloaded", timeout=45000)
-        await page.wait_for_timeout(1500)
-        image = await _grab_qr(page)
+        captured = await _open_qr(page)
+        image = await _qr_image(page, captured)
+        qr_token = None
+        for item in captured:
+            qr_token = _extract_login_token(item) or qr_token
         async with _guard:
             _sessions[account_id] = {
                 "pw": pw,
@@ -358,18 +371,20 @@ async def start_qr_login(account_id: int, username: str, proxy_url: str | None) 
                 "username": username,
                 "mode": "qr",
                 "created": time.time(),
+                "events": captured,
+                "qr_token": qr_token,
             }
         return {
             "status": "qr_ready",
             "image_base64": image,
-            "detail": "Открой TikTok на телефоне → Профиль → меню ☰ → Сканировать. Наведи камеру на этот QR.",
+            "detail": f"Сессия запишется в {username}. На телефоне открой этот аккаунт и нажми «Это я».",
         }
-    except Exception:
+    except Exception as exc:
         await _shutdown_handles(pw, browser)
-        await log_event("backend", "WARNING", "qr_login_failed", f"account_id={account_id}")
+        await log_event("backend", "WARNING", "qr_login_failed", _public_error(exc))
         return {
             "status": "failed",
-            "detail": "Не удалось открыть QR. Проверь прокси и что сервер может открыть tiktok.com.",
+            "detail": f"QR для {username} не открылся: {_public_error(exc)}",
         }
 
 
@@ -379,14 +394,48 @@ async def poll_qr_login(account_id: int) -> dict:
         sess = _sessions.get(account_id)
     if not sess or sess.get("mode") != "qr":
         return {"status": "idle", "detail": "QR не запущен"}
+    now = time.time()
     try:
-        if await _logged_in(sess["context"], sess["page"]):
+        phase = None
+        for item in sess.get("events") or []:
+            phase = _qr_phase(item) or phase
+        qr_token = sess.get("qr_token")
+        if qr_token and phase not in {"confirmed", "success", "expired"}:
+            try:
+                fresh = await sess["page"].evaluate(
+                    """async (loginToken) => {
+                      const next = encodeURIComponent('https://www.tiktok.com/');
+                      const url = '/passport/web/check_qrconnect/?aid=1459&token='
+                        + encodeURIComponent(loginToken) + '&next=' + next;
+                      const response = await fetch(url, {credentials: 'include'});
+                      return await response.json();
+                    }""",
+                    qr_token,
+                )
+                if isinstance(fresh, dict):
+                    sess["events"].append(fresh)
+                    phase = _qr_phase(fresh) or phase
+            except Exception:
+                pass
+        if phase == "expired" and now - sess.get("created", now) > 45:
+            await close_login(account_id)
+            return {"status": "expired", "detail": "QR истёк. Нажми «QR с телефона» ещё раз."}
+        logged = await _logged_in(sess["context"], sess["page"])
+        if phase in {"confirmed", "success"} and not logged:
+            try:
+                await sess["page"].goto("https://www.tiktok.com/foryou", wait_until="domcontentloaded", timeout=20000)
+            except Exception:
+                pass
+            logged = await _logged_in(sess["context"], sess["page"])
+        if logged or phase in {"confirmed", "success"}:
             await _persist(sess["context"], sess["username"])
             await close_login(account_id)
-            return {"status": "authenticated", "detail": "Телефон подтвердил вход"}
+            return {"status": "authenticated", "detail": f"Сессия записана в {sess['username']}"}
+        if phase == "scanned":
+            return {"status": "waiting_scan", "detail": f"Телефон увидел код. Нажми «Это я» для {sess['username']}."}
     except Exception:
         await close_login(account_id)
-        return {"status": "failed", "detail": "Сессия QR оборвалась. Запусти QR ещё раз."}
+        return {"status": "failed", "detail": "Сессия QR оборвалась. Нажми «QR с телефона» ещё раз."}
     return {"status": "waiting_scan", "detail": "Жду подтверждение в приложении TikTok"}
 
 
