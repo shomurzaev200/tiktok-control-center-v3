@@ -209,49 +209,95 @@ async def _persist(context, username: str) -> None:
     )
 
 
-async def _grab_qr(page) -> str:
-    script = """() => {
-      const found = [];
-      const visit = (root) => {
-        if (!root || !root.querySelectorAll) return;
-        for (const el of root.querySelectorAll('*')) {
-          if (el.shadowRoot) visit(el.shadowRoot);
-          const r = el.getBoundingClientRect();
-          if (r.width < 72 || r.height < 72 || r.width > 460 || r.height > 460) continue;
-          const ratio = r.width / r.height;
-          if (ratio < 0.82 || ratio > 1.18) continue;
-          found.push({x: r.x, y: r.y, width: r.width, height: r.height, area: r.width * r.height});
-        }
-      };
-      visit(document);
-      if (!found.length) return null;
-      found.sort((a, b) => b.area - a.area);
-      return found[0];
-    }"""
-    box = None
-    for _ in range(15):
-        box = await page.evaluate(script)
-        if box and box["width"] >= 120:
+def _extract_qr_value(payload):
+    if isinstance(payload, dict):
+        for key in ("qrcode", "qr_code", "qrcode_index_url", "scan_qrcode_url"):
+            value = payload.get(key)
+            if isinstance(value, str) and len(value) > 40:
+                return value
+        for value in payload.values():
+            found = _extract_qr_value(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for item in payload:
+            found = _extract_qr_value(item)
+            if found:
+                return found
+    return None
+
+
+async def _image_from_value(page, value: str) -> str | None:
+    if value.startswith("data:image"):
+        return value.split(",", 1)[-1]
+    if value.startswith("http://") or value.startswith("https://"):
+        response = await page.context.request.get(value, timeout=15000)
+        if not response.ok:
+            return None
+        return base64.b64encode(await response.body()).decode()
+    compact = re.sub(r"\s+", "", value)
+    if len(compact) > 200 and re.fullmatch(r"[A-Za-z0-9+/=]+", compact):
+        return compact
+    return None
+
+
+async def _open_qr(page) -> list:
+    captured: list = []
+
+    async def handle(response):
+        url = response.url.lower()
+        if "qrcode" not in url and "qr_code" not in url:
+            return
+        try:
+            captured.append(await response.json())
+        except Exception:
+            return
+
+    page.on("response", lambda response: asyncio.create_task(handle(response)))
+    await page.goto("https://www.tiktok.com/login/qrcode", wait_until="domcontentloaded", timeout=20000)
+    for label in ("Use QR code", "QR code", "QR-код", "Сканировать"):
+        button = page.get_by_text(label, exact=False).first
+        try:
+            if await button.count():
+                await button.click(timeout=1500)
+                break
+        except Exception:
+            continue
+    for _ in range(12):
+        if any(_extract_qr_value(item) for item in captured):
             break
         await page.wait_for_timeout(1000)
-    if not box:
-        view = page.viewport_size or {"width": 1280, "height": 900}
-        side = 420
-        box = {
-            "x": max(0, (view["width"] - side) / 2),
-            "y": max(0, (view["height"] - side) / 2 - 40),
-            "width": side,
-            "height": side,
-        }
-    png = await page.screenshot(
-        clip={
-            "x": max(0, float(box["x"]) - 6),
-            "y": max(0, float(box["y"]) - 6),
-            "width": float(box["width"]) + 12,
-            "height": float(box["height"]) + 12,
-        }
-    )
-    return base64.b64encode(png).decode()
+    return captured
+
+
+async def _grab_qr(page) -> str:
+    script = """() => {
+      const nodes = [...document.querySelectorAll('canvas, img, svg')];
+      let best = null;
+      for (const el of nodes) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 110 || r.height < 110 || r.width > 420) continue;
+        const ratio = r.width / r.height;
+        if (ratio < 0.8 || ratio > 1.25) continue;
+        const area = r.width * r.height;
+        if (!best || area > best.area) best = {x: r.x, y: r.y, width: r.width, height: r.height, area};
+      }
+      return best;
+    }"""
+    for _ in range(8):
+        box = await page.evaluate(script)
+        if box:
+            png = await page.screenshot(
+                clip={
+                    "x": max(0, float(box["x"]) - 8),
+                    "y": max(0, float(box["y"]) - 8),
+                    "width": float(box["width"]) + 16,
+                    "height": float(box["height"]) + 16,
+                }
+            )
+            return base64.b64encode(png).decode()
+        await page.wait_for_timeout(1000)
+    raise RuntimeError("TikTok не прислал QR: на странице только значок загрузки")
 
 
 async def start_qr_login(account_id: int, username: str, proxy_url: str | None) -> dict:
@@ -302,19 +348,6 @@ async def poll_qr_login(account_id: int) -> dict:
         await close_login(account_id)
         return {"status": "failed", "detail": "Сессия QR оборвалась. Запусти QR ещё раз."}
     return {"status": "waiting_scan", "detail": "Жду подтверждение в приложении TikTok"}
-
-
-async def _open_qr(page) -> None:
-    await page.goto("https://www.tiktok.com/login/qrcode", wait_until="domcontentloaded", timeout=12000)
-    for label in ("Use QR code", "QR code", "QR-код", "Сканировать"):
-        button = page.get_by_text(label, exact=False).first
-        try:
-            if await button.count():
-                await button.click(timeout=1500)
-                break
-        except Exception:
-            continue
-    await page.wait_for_timeout(1200)
 
 
 async def _read_username(page) -> str | None:
@@ -368,8 +401,16 @@ async def start_qr_signup() -> dict:
         pw = browser = None
         try:
             pw, browser, context, page = await _launch(chosen)
-            await _open_qr(page)
-            image = await _grab_qr(page)
+            captured = await _open_qr(page)
+            image = None
+            for item in captured:
+                value = _extract_qr_value(item)
+                if value:
+                    image = await _image_from_value(page, value)
+                    if image:
+                        break
+            if not image:
+                image = await _grab_qr(page)
             async with _guard:
                 _signups[token] = {
                     "pw": pw,
