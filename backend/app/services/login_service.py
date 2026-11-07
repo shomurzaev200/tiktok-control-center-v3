@@ -304,33 +304,42 @@ async def close_signup(token: str) -> None:
 
 async def start_qr_signup() -> dict:
     await _drop_expired()
-    token = uuid.uuid4().hex
-    chosen, index, total = _pick_proxy(None)
-    label = f"{index}/{total} {_proxy_label(chosen)}" if total else "без прокси"
-    pw = browser = None
-    try:
-        pw, browser, context, page = await _launch(chosen)
-        await _open_qr(page)
-        image = await _grab_qr(page)
-        async with _guard:
-            _signups[token] = {
-                "pw": pw,
-                "browser": browser,
-                "context": context,
-                "page": page,
-                "created": time.time(),
+    pool = _proxy_pool() or [None]
+    global _proxy_cursor
+    start = _proxy_cursor % len(pool)
+    errors: list[str] = []
+    for offset in range(len(pool)):
+        slot = (start + offset) % len(pool)
+        chosen = pool[slot]
+        _proxy_cursor = slot + 1
+        label = f"{slot + 1}/{len(pool)} {_proxy_label(chosen)}"
+        token = uuid.uuid4().hex
+        pw = browser = None
+        try:
+            pw, browser, context, page = await _launch(chosen)
+            await _open_qr(page)
+            image = await _grab_qr(page)
+            async with _guard:
+                _signups[token] = {
+                    "pw": pw,
+                    "browser": browser,
+                    "context": context,
+                    "page": page,
+                    "created": time.time(),
+                }
+            skipped = f" Пропущено мёртвых: {offset}." if offset else ""
+            return {
+                "status": "qr_ready",
+                "token": token,
+                "image_base64": image,
+                "detail": f"Идёт только прокси {label}.{skipped} На телефоне: TikTok → Профиль → меню ☰ → Сканировать.",
             }
-        return {
-            "status": "qr_ready",
-            "token": token,
-            "image_base64": image,
-            "detail": f"Идёт только прокси {label}. Остальные ждут. На телефоне: TikTok → Профиль → меню ☰ → Сканировать.",
-        }
-    except Exception as exc:
-        await _shutdown_handles(pw, browser)
-        reason = _public_error(exc)
-        await log_event("backend", "WARNING", "qr_signup_failed", f"{label}: {reason}")
-        return {"status": "failed", "detail": f"Прокси {label} не открыл QR: {reason}"}
+        except Exception as exc:
+            await _shutdown_handles(pw, browser)
+            errors.append(f"{label}: {_public_error(exc)}")
+    reason = errors[-1] if errors else "нет прокси"
+    await log_event("backend", "WARNING", "qr_signup_failed", reason)
+    return {"status": "failed", "detail": f"Ни один прокси не открыл QR. Последний: {reason}"}
 
 
 async def poll_qr_signup(token: str) -> dict:

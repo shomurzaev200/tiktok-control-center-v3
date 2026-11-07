@@ -7,7 +7,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSock
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,9 @@ from app.routers import auth, accounts, sources_videos, comments_tasks, system
 async def lifespan(app: FastAPI):
     try:
         await ensure_schema()
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("TRUNCATE TABLE system_logs, health_history RESTART IDENTITY"))
+            await db.commit()
         await log_event("backend", "INFO", "startup", "TikTok Control Center v3.0 API запущен")
     except Exception as exc:
         await log_event("backend", "ERROR", "startup_db_err", str(exc), exc)

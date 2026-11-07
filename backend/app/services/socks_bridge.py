@@ -53,33 +53,67 @@ class SocksHttpBridge:
                 remote_writer.close()
 
     async def _open_socks(self, host: str, port: int):
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(self.host, self.port), timeout=12)
-        writer.write(b"\x05\x01\x02")
-        await writer.drain()
-        answer = await reader.readexactly(2)
-        if answer != b"\x05\x02":
-            raise RuntimeError("SOCKS5 не принял логин")
-        user = self.username.encode()
-        password = self.password.encode()
-        writer.write(bytes((0x01, len(user))) + user + bytes((len(password),)) + password)
-        await writer.drain()
-        auth = await reader.readexactly(2)
-        if auth[1] != 0:
-            raise RuntimeError("SOCKS5 отклонил логин или пароль")
-        host_bytes = host.encode()
-        writer.write(b"\x05\x01\x00\x03" + bytes((len(host_bytes),)) + host_bytes + port.to_bytes(2, "big"))
-        await writer.drain()
-        head = await reader.readexactly(4)
-        if head[1] != 0:
-            raise RuntimeError(f"SOCKS5 не открыл сайт, код {head[1]}")
-        if head[3] == 1:
-            await reader.readexactly(4 + 2)
-        elif head[3] == 4:
-            await reader.readexactly(16 + 2)
-        elif head[3] == 3:
-            size = (await reader.readexactly(1))[0]
-            await reader.readexactly(size + 2)
-        return reader, writer
+        last_error: Exception | None = None
+        for opener in (self._open_socks5, self._open_socks4):
+            try:
+                return await opener(host, port)
+            except Exception as exc:
+                last_error = exc
+        raise last_error or RuntimeError("Прокси не ответил")
+
+    async def _open_socks5(self, host: str, port: int):
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(self.host, self.port), timeout=8)
+        try:
+            writer.write(b"\x05\x01\x02")
+            await writer.drain()
+            answer = await reader.readexactly(2)
+            if answer != b"\x05\x02":
+                raise RuntimeError("это не SOCKS5 с паролем")
+            user = self.username.encode()
+            password = self.password.encode()
+            writer.write(bytes((0x01, len(user))) + user + bytes((len(password),)) + password)
+            await writer.drain()
+            auth = await reader.readexactly(2)
+            if auth[1] != 0:
+                raise RuntimeError("SOCKS5 отклонил логин или пароль")
+            host_bytes = host.encode()
+            writer.write(b"\x05\x01\x00\x03" + bytes((len(host_bytes),)) + host_bytes + port.to_bytes(2, "big"))
+            await writer.drain()
+            head = await reader.readexactly(4)
+            if head[1] != 0:
+                raise RuntimeError(f"SOCKS5 не открыл сайт, код {head[1]}")
+            if head[3] == 1:
+                await reader.readexactly(4 + 2)
+            elif head[3] == 4:
+                await reader.readexactly(16 + 2)
+            elif head[3] == 3:
+                size = (await reader.readexactly(1))[0]
+                await reader.readexactly(size + 2)
+            return reader, writer
+        except Exception:
+            writer.close()
+            raise
+
+    async def _open_socks4(self, host: str, port: int):
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(self.host, self.port), timeout=8)
+        try:
+            writer.write(
+                b"\x04\x01"
+                + port.to_bytes(2, "big")
+                + b"\x00\x00\x00\x01"
+                + self.username.encode()
+                + b"\x00"
+                + host.encode()
+                + b"\x00"
+            )
+            await writer.drain()
+            reply = await reader.readexactly(8)
+            if reply[1] != 0x5A:
+                raise RuntimeError(f"SOCKS4 отказ {reply[1]}")
+            return reader, writer
+        except Exception:
+            writer.close()
+            raise
 
     @staticmethod
     async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
