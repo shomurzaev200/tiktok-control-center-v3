@@ -10,12 +10,14 @@ from urllib.parse import urlparse
 from app.config import settings
 from app.logger import log_event
 from app.services.integration_service import integration_service
+from app.services.socks_bridge import SocksHttpBridge
 
 _sessions: dict[int, dict] = {}
 _signups: dict[str, dict] = {}
 _guard = asyncio.Lock()
 _LOGIN_TTL_SEC = 180
 _proxy_cursor = 0
+_bridges: dict[int, SocksHttpBridge] = {}
 
 
 def _normalize_proxy_url(value: str) -> str:
@@ -39,16 +41,18 @@ def _proxy_pool() -> list[str]:
     return found
 
 
-def _pick_proxy(explicit: str | None) -> str | None:
-    if explicit and explicit.strip():
-        return _normalize_proxy_url(explicit)
+def _pick_proxy(explicit: str | None) -> tuple[str | None, int, int]:
     pool = _proxy_pool()
+    if explicit and explicit.strip():
+        chosen = _normalize_proxy_url(explicit)
+        index = pool.index(chosen) + 1 if chosen in pool else 1
+        return chosen, index, max(len(pool), 1)
     if not pool:
-        return None
+        return None, 0, 0
     global _proxy_cursor
-    chosen = pool[_proxy_cursor % len(pool)]
+    index = _proxy_cursor % len(pool)
     _proxy_cursor += 1
-    return chosen
+    return pool[index], index + 1, len(pool)
 
 
 def _proxy_label(proxy_url: str | None) -> str:
@@ -61,7 +65,6 @@ def _proxy_label(proxy_url: str | None) -> str:
 
 
 def _proxy_for_browser(proxy_url: str | None) -> dict | None:
-    proxy_url = _pick_proxy(proxy_url)
     if not proxy_url:
         return None
     parsed = urlparse(proxy_url)
@@ -75,6 +78,12 @@ def _proxy_for_browser(proxy_url: str | None) -> dict | None:
 
 
 async def _shutdown_handles(pw, browser) -> None:
+    bridge = _bridges.pop(id(pw), None) if pw else None
+    if bridge:
+        try:
+            await bridge.close()
+        except Exception:
+            pass
     if browser:
         try:
             await browser.close()
@@ -108,25 +117,24 @@ async def _launch(proxy_url: str | None):
 
     pw = await async_playwright().start()
     proxy = _proxy_for_browser(proxy_url)
-    # Chromium не умеет SOCKS с логином и паролем. Для таких прокси нужен Firefox.
-    use_firefox = bool(proxy and str(proxy.get("server", "")).startswith("socks") and proxy.get("username"))
-    if use_firefox:
-        browser = await pw.firefox.launch(headless=True)
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0"
-    else:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-        )
-        user_agent = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        )
+    if proxy and str(proxy.get("server", "")).startswith("socks") and proxy.get("username"):
+        parsed = urlparse(proxy["server"])
+        bridge = SocksHttpBridge(parsed.hostname, parsed.port, proxy["username"], proxy.get("password") or "")
+        await bridge.start()
+        _bridges[id(pw)] = bridge
+        proxy = {"server": f"http://127.0.0.1:{bridge.local_port}"}
+    browser = await pw.chromium.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    )
     context = await browser.new_context(
         proxy=proxy,
         viewport={"width": 1280, "height": 900},
         locale="ru-RU",
-        user_agent=user_agent,
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
     )
     page = await context.new_page()
     return pw, browser, context, page
@@ -297,7 +305,8 @@ async def close_signup(token: str) -> None:
 async def start_qr_signup() -> dict:
     await _drop_expired()
     token = uuid.uuid4().hex
-    chosen = _pick_proxy(None)
+    chosen, index, total = _pick_proxy(None)
+    label = f"{index}/{total} {_proxy_label(chosen)}" if total else "без прокси"
     pw = browser = None
     try:
         pw, browser, context, page = await _launch(chosen)
@@ -315,13 +324,13 @@ async def start_qr_signup() -> dict:
             "status": "qr_ready",
             "token": token,
             "image_base64": image,
-            "detail": f"Прокси {_proxy_label(chosen)}. На телефоне открой TikTok → Профиль → меню ☰ → Сканировать. Следующее нажатие возьмёт следующий прокси.",
+            "detail": f"Идёт только прокси {label}. Остальные ждут. На телефоне: TikTok → Профиль → меню ☰ → Сканировать.",
         }
     except Exception as exc:
         await _shutdown_handles(pw, browser)
         reason = _public_error(exc)
-        await log_event("backend", "WARNING", "qr_signup_failed", reason)
-        return {"status": "failed", "detail": f"QR не открылся: {reason}"}
+        await log_event("backend", "WARNING", "qr_signup_failed", f"{label}: {reason}")
+        return {"status": "failed", "detail": f"Прокси {label} не открыл QR: {reason}"}
 
 
 async def poll_qr_signup(token: str) -> dict:
