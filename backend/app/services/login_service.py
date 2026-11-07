@@ -269,47 +269,17 @@ def _reply_text(payload) -> str:
 
 async def _ask_confirm(sess) -> str | None:
     phase = None
+    last = None
     for item in sess.get("events") or []:
-        if item.get("_src") == "poll" and _qr_phase(item) == "expired":
+        if item.get("_src") == "poll":
             continue
+        last = item
         phase = _merge_phase(phase, item)
-    token = sess.get("qr_token")
-    if not token:
-        sess["reply"] = "токен QR не найден, обратный запрос не отправлен"
-        return phase
-    if phase in {"confirmed", "expired"}:
-        return phase
-    url = (
-        "https://www.tiktok.com/passport/web/check_qrconnect/?aid=1459&token="
-        + token
-        + "&next=https%3A%2F%2Fwww.tiktok.com%2F"
-    )
-    try:
-        fresh = await sess["page"].evaluate(
-            """async (loginToken) => {
-              const next = encodeURIComponent('https://www.tiktok.com/');
-              const url = '/passport/web/check_qrconnect/?aid=1459&token='
-                + encodeURIComponent(loginToken) + '&next=' + next;
-              const response = await fetch(url, {credentials: 'include', cache: 'no-store'});
-              let body = {};
-              try { body = await response.json(); } catch (e) { body = {message: 'non-json'}; }
-              if (!body || typeof body !== 'object') body = {message: 'non-json'};
-              body._http = response.status;
-              return body;
-            }""",
-            token,
-        )
-    except Exception as exc:
-        sess["reply"] = "обратный запрос не прошёл: " + _public_error(exc)
-        return phase
-    if isinstance(fresh, dict):
-        fresh["_src"] = "poll"
-        if not (fresh.get("_http") == 200 and _qr_phase(fresh) == "expired" and phase in {None, "new"}):
-            sess.setdefault("events", []).append(fresh)
-            phase = _merge_phase(phase, fresh)
-        sess["reply"] = _reply_text(fresh) or "TikTok ответил пустым телом"
-    else:
-        sess["reply"] = "TikTok ответил не JSON"
+    if phase == "scanned":
+        sess["saw_scan"] = True
+    if phase == "expired" and sess.get("saw_scan"):
+        phase = "scanned"
+    sess["reply"] = _reply_text(last) if last else "страница ещё не ответила"
     return phase
 
 
@@ -537,7 +507,7 @@ async def poll_qr_login(account_id: int) -> dict:
     try:
         phase = await _ask_confirm(sess)
         reply = sess.get("reply") or "обратного ответа нет"
-        if phase == "expired":
+        if phase == "expired" and not sess.get("saw_scan"):
             image = await _refresh_expired_qr(sess)
             if image:
                 return {
@@ -545,7 +515,7 @@ async def poll_qr_login(account_id: int) -> dict:
                     "detail": "Старый код истёк. На экране новый, сканируй его.",
                     "image_base64": image,
                 }
-            if sess.get("reloads", 0) >= 1:
+            if now - sess.get("created", now) > 90:
                 await close_login(account_id)
                 return {"status": "expired", "detail": "QR истёк. Нажми «QR с телефона» ещё раз."}
             phase = None
@@ -688,7 +658,7 @@ async def poll_qr_signup(token: str) -> dict:
     try:
         phase = await _ask_confirm(sess)
         reply = sess.get("reply") or "обратного ответа нет"
-        if phase == "expired":
+        if phase == "expired" and not sess.get("saw_scan"):
             image = await _refresh_expired_qr(sess)
             if image:
                 return {
@@ -696,7 +666,7 @@ async def poll_qr_signup(token: str) -> dict:
                     "detail": "Старый код истёк. На экране новый, сканируй его.",
                     "image_base64": image,
                 }
-            if sess.get("reloads", 0) >= 1:
+            if now - sess.get("created", now) > 90:
                 await close_signup(token)
                 return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
             phase = None
