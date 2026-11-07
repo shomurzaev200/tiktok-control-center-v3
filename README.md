@@ -26,3 +26,9 @@ sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli container
 chmod +x install_all.sh update.sh backup.sh restore.sh diagnostics.sh
 ./install_all.sh
 ```
+
+Панель доступна на портах **80**, **8080** (HTTP) и **443** (HTTPS):
+
+- `http://IP-сервера:8080`
+- `http://IP-сервера`
+- `https://IP-сервера`
