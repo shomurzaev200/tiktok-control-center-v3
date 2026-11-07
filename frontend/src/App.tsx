@@ -464,7 +464,7 @@ export default function App() {
                       }}
                     />
                     <div className="flex flex-wrap gap-2">
-                      <input placeholder="Текст в выбранное поле" value={manualText} onChange={e => setManualText(e.target.value)} className={inp} />
+                      <input placeholder="Пароль TikTok" value={manualText} onChange={e => setManualText(e.target.value)} className={inp} />
                       <button type="button" className={btn} onClick={async () => {
                         if (!manualText) return;
                         const r = await api("/api/accounts/manual-login/type", { method: "POST", body: JSON.stringify({ text: manualText }) });
@@ -473,6 +473,12 @@ export default function App() {
                         if (d.image_base64) setLoginUi((prev: any) => prev ? { ...prev, image: d.image_base64, message: d.detail || prev.message } : prev);
                         setManualText("");
                       }}>Ввести</button>
+                      <button type="button" className={btn} onClick={async () => {
+                        const r = await api("/api/accounts/manual-login/next", { method: "POST" });
+                        const d = await r.json();
+                        if (d.detail) notify(d.detail, d.detail.startsWith("нажал") ? "ok" : "err");
+                        if (d.image_base64) setLoginUi((prev: any) => prev ? { ...prev, image: d.image_base64, message: d.detail || prev.message } : prev);
+                      }}>Далее</button>
                       <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={async () => {
                         const r = await api("/api/accounts/manual-login/pick", { method: "POST", body: JSON.stringify({ choice: "email" }) });
                         const d = await r.json();

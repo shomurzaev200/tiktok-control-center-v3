@@ -894,20 +894,59 @@ async def manual_type(text: str) -> str:
         return "вход не запущен"
     page = _manual["page"]
     value = text[:200]
-    for frame in page.frames:
-        field = frame.locator(
-            'input[type="password"], input[placeholder*="ароль" i], input[name="password"]'
-        ).last
-        try:
-            if not await field.count():
-                continue
-            await field.click(timeout=3000)
-            await field.fill("")
-            await field.press_sequentially(value, delay=35)
+    result = await page.evaluate(
+        """(value) => {
+          const found = [];
+          const walk = (root) => {
+            if (!root || !root.querySelectorAll) return;
+            root.querySelectorAll('input').forEach((el) => found.push(el));
+            root.querySelectorAll('*').forEach((el) => { if (el.shadowRoot) walk(el.shadowRoot); });
+          };
+          walk(document);
+          const visible = found.filter((el) => {
+            const r = el.getBoundingClientRect();
+            return r.width > 80 && r.height > 16;
+          });
+          const input = visible.find((el) => el.type === 'password' || /парол|pass/i.test(el.placeholder || ''))
+            || visible[visible.length - 1];
+          if (!input) return 'поле не найдено, полей на странице: ' + found.length;
+          input.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(input, value);
+          input.dispatchEvent(new InputEvent('input', {bubbles: true, data: value, inputType: 'insertText'}));
+          input.dispatchEvent(new Event('change', {bubbles: true}));
+          return input.value.length === value.length
+            ? 'записано ' + input.value.length + ' символов'
+            : 'поле не приняло текст';
+        }""",
+        value,
+    )
+    if str(result).startswith("записано"):
+        return str(result)
+    try:
+        field = page.locator('input[type="password"]').last
+        if await field.count():
+            await field.click(force=True, timeout=2000)
+            await page.keyboard.insert_text(value)
             return f"записано {len(value)} символов"
+    except Exception:
+        pass
+    return str(result)
+
+
+async def manual_next() -> str:
+    if not _manual:
+        return "вход не запущен"
+    page = _manual["page"]
+    for label in ("Далее", "Next", "Log in", "Войти"):
+        try:
+            button = page.get_by_role("button", name=label).last
+            if await button.count():
+                await button.click(timeout=3000)
+                return f"нажал {label}"
         except Exception:
             continue
-    return "поле не найдено"
+    return "кнопка Далее не найдена"
 
 
 async def manual_pick(choice: str) -> str:

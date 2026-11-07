@@ -14,6 +14,7 @@ from app.services.login_service import (
     close_manual_login,
     manual_click,
     manual_key,
+    manual_next,
     manual_pick,
     manual_show_password,
     manual_type,
@@ -95,6 +96,18 @@ async def manual_login_click(payload: dict = Body(...), admin: AdminUser = Depen
 @router.post("/manual-login/type")
 async def manual_login_type(payload: dict = Body(...), admin: AdminUser = Depends(require_role("admin"))):
     detail = await manual_type(str(payload.get("text") or ""))
+    image = ""
+    try:
+        from app.services.login_service import _manual_image
+        image = await _manual_image()
+    except Exception:
+        image = ""
+    return {"ok": True, "image_base64": image, "detail": detail}
+
+
+@router.post("/manual-login/next")
+async def manual_login_next(admin: AdminUser = Depends(require_role("admin"))):
+    detail = await manual_next()
     image = ""
     try:
         from app.services.login_service import _manual_image
