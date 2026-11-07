@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
+from app.config import settings
 from app.logger import log_event
 from app.services.integration_service import integration_service
 
@@ -17,6 +18,8 @@ _LOGIN_TTL_SEC = 180
 
 
 def _proxy_for_browser(proxy_url: str | None) -> dict | None:
+    if not proxy_url:
+        proxy_url = (settings.TIKTOK_PROXY or "").strip() or None
     if not proxy_url:
         return None
     parsed = urlparse(proxy_url)
