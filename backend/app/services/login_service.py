@@ -304,15 +304,19 @@ async def close_signup(token: str) -> None:
 
 async def start_qr_signup() -> dict:
     await _drop_expired()
-    pool = _proxy_pool() or [None]
-    global _proxy_cursor
-    start = _proxy_cursor % len(pool)
+    pool = _proxy_pool()
+    ordered: list[str | None] = []
+    if pool:
+        global _proxy_cursor
+        start = _proxy_cursor % len(pool)
+        for offset in range(min(3, len(pool))):
+            ordered.append(pool[(start + offset) % len(pool)])
+        _proxy_cursor = (start + len(ordered)) % len(pool)
+    ordered.append(None)
     errors: list[str] = []
-    for offset in range(len(pool)):
-        slot = (start + offset) % len(pool)
-        chosen = pool[slot]
-        _proxy_cursor = slot + 1
-        label = f"{slot + 1}/{len(pool)} {_proxy_label(chosen)}"
+    for offset, chosen in enumerate(ordered):
+        slot = offset + 1
+        label = "напрямую" if chosen is None else f"{slot}/{len(ordered)} {_proxy_label(chosen)}"
         token = uuid.uuid4().hex
         pw = browser = None
         try:

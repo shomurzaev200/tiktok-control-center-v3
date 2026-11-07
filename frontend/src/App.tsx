@@ -366,12 +366,20 @@ export default function App() {
               <div className="flex gap-2">
                 <button
                   onClick={async () => {
-                    notify("Готовлю QR для сканера...");
-                    const r = await api("/api/accounts/qr-signup", { method: "POST" });
-                    const d = await r.json();
-                    if (!r.ok || d.status !== "qr_ready" || !d.image_base64) return notify(d.detail || "QR не открылся", "err");
-                    setLoginUi({ mode: "qr-new", token: d.token, message: d.detail, image: d.image_base64 });
-                    notify("QR на экране. Сканируй его в TikTok на телефоне.");
+                    notify("Готовлю QR. Мёртвые прокси пропускаются, это может занять минуту.");
+                    try {
+                      const r = await api("/api/accounts/qr-signup", { method: "POST" });
+                      const d = await r.json();
+                      if (!r.ok || d.status !== "qr_ready" || !d.image_base64) {
+                        setLoginUi({ mode: "qr-error", message: d.detail || "QR не открылся" });
+                        return notify(d.detail || "QR не открылся", "err");
+                      }
+                      setLoginUi({ mode: "qr-new", token: d.token, message: d.detail, image: d.image_base64 });
+                      notify("QR на экране. Сканируй его в TikTok на телефоне.");
+                    } catch {
+                      setLoginUi({ mode: "qr-error", message: "Сервер не успел ответить. Нажми ещё раз и подожди минуту." });
+                      notify("Сервер не успел ответить", "err");
+                    }
                   }}
                   className={btn}
                 >
@@ -386,7 +394,7 @@ export default function App() {
               <div className={`${card} border-cyan-500/40 space-y-3`}>
                 <div className="flex justify-between">
                   <h3 className="font-bold text-cyan-400">
-                    {loginUi.mode === "qr-new" ? "Сканер: добавление аккаунта" : `Вход в аккаунт #${loginUi.id}`}
+                    {loginUi.mode === "qr-new" ? "Сканер: добавление аккаунта" : loginUi.mode === "qr-error" ? "Сканер: QR не открылся" : `Вход в аккаунт #${loginUi.id}`}
                   </h3>
                   <button onClick={() => setLoginUi(null)} className="text-xs text-slate-400">✕ Закрыть</button>
                 </div>
