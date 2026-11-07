@@ -18,6 +18,8 @@ _guard = asyncio.Lock()
 _LOGIN_TTL_SEC = 180
 _proxy_cursor = 0
 _bridges: dict[int, SocksHttpBridge] = {}
+_dead_proxies: set[str] = set()
+_DEAD_KEY = "DEAD_TIKTOK_PROXIES"
 
 
 def _normalize_proxy_url(value: str) -> str:
@@ -36,9 +38,39 @@ def _proxy_pool() -> list[str]:
     found: list[str] = []
     for part in raw.replace(";", ",").replace("\n", ",").split(","):
         item = _normalize_proxy_url(part)
-        if item and item not in found:
+        if item and item not in found and item not in _dead_proxies:
             found.append(item)
     return found
+
+
+async def _load_dead_proxies() -> None:
+    if _dead_proxies:
+        return
+    from app.database import AsyncSessionLocal
+    from app.models import SystemSetting
+
+    async with AsyncSessionLocal() as db:
+        row = await db.get(SystemSetting, _DEAD_KEY)
+        if row and row.value:
+            _dead_proxies.update(part for part in row.value.split(",") if part)
+
+
+async def _forget_proxy(proxy_url: str | None) -> None:
+    if not proxy_url or proxy_url in _dead_proxies:
+        return
+    from app.database import AsyncSessionLocal
+    from app.models import SystemSetting
+
+    _dead_proxies.add(proxy_url)
+    async with AsyncSessionLocal() as db:
+        row = await db.get(SystemSetting, _DEAD_KEY)
+        value = ",".join(sorted(_dead_proxies))
+        if row:
+            row.value = value
+        else:
+            db.add(SystemSetting(key=_DEAD_KEY, value=value, description="Мёртвые прокси, больше не используются"))
+        await db.commit()
+    await log_event("backend", "INFO", "proxy_removed", f"Мёртвый прокси удалён из пула: {_proxy_label(proxy_url)}")
 
 
 def _pick_proxy(explicit: str | None) -> tuple[str | None, int, int]:
@@ -304,6 +336,7 @@ async def close_signup(token: str) -> None:
 
 async def start_qr_signup() -> dict:
     await _drop_expired()
+    await _load_dead_proxies()
     pool = _proxy_pool()
     ordered: list[str | None] = []
     if pool:
@@ -340,6 +373,8 @@ async def start_qr_signup() -> dict:
             }
         except Exception as exc:
             await _shutdown_handles(pw, browser)
+            if chosen:
+                await _forget_proxy(chosen)
             errors.append(f"{label}: {_public_error(exc)}")
     reason = errors[-1] if errors else "нет прокси"
     await log_event("backend", "WARNING", "qr_signup_failed", reason)
