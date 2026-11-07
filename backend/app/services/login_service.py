@@ -255,6 +255,8 @@ def _reply_text(payload) -> str:
     bits = []
     if payload.get("message"):
         bits.append(str(payload["message"])[:40])
+    if payload.get("_http"):
+        bits.append("http=" + str(payload.get("_http"))[:3])
     if data.get("status") is not None:
         bits.append("status=" + str(data.get("status"))[:40])
     if data.get("error_code") is not None:
@@ -281,8 +283,20 @@ async def _ask_confirm(sess) -> str | None:
         + "&next=https%3A%2F%2Fwww.tiktok.com%2F"
     )
     try:
-        response = await sess["page"].context.request.get(url, timeout=15000)
-        fresh = await response.json()
+        fresh = await sess["page"].evaluate(
+            """async (loginToken) => {
+              const next = encodeURIComponent('https://www.tiktok.com/');
+              const url = '/passport/web/check_qrconnect/?aid=1459&token='
+                + encodeURIComponent(loginToken) + '&next=' + next;
+              const response = await fetch(url, {credentials: 'include', cache: 'no-store'});
+              let body = {};
+              try { body = await response.json(); } catch (e) { body = {message: 'non-json'}; }
+              if (!body || typeof body !== 'object') body = {message: 'non-json'};
+              body._http = response.status;
+              return body;
+            }""",
+            token,
+        )
     except Exception as exc:
         sess["reply"] = "обратный запрос не прошёл: " + _public_error(exc)
         return phase
@@ -296,17 +310,7 @@ async def _ask_confirm(sess) -> str | None:
 
 
 async def _fresh_qr_image(sess) -> str | None:
-    value = None
-    for item in reversed(sess.get("events") or []):
-        value = _extract_qr_value(item)
-        if value:
-            break
-    if not value or value == sess.get("shown_qr"):
-        return None
-    image = await _image_from_value(sess["page"], value)
-    if image:
-        sess["shown_qr"] = value
-    return image
+    return None
 
 
 def _extract_qr_value(payload):
@@ -327,23 +331,25 @@ def _extract_qr_value(payload):
     return None
 
 
-def _extract_login_token(payload) -> str | None:
-    if isinstance(payload, dict):
-        value = payload.get("token")
-        if isinstance(value, str) and 16 < len(value) < 2000:
-            return value
-        for key, child in payload.items():
-            if key in {"qrcode", "qrcode_index_url", "scan_qrcode_url"}:
-                continue
-            found = _extract_login_token(child)
-            if found:
-                return found
-    elif isinstance(payload, list):
-        for item in payload:
-            found = _extract_login_token(item)
-            if found:
-                return found
+def _token_for_qr(payload) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    token = data.get("token")
+    image = data.get("qrcode") or data.get("qrcode_index_url")
+    if isinstance(token, str) and isinstance(image, str) and len(token) > 16 and len(image) > 40:
+        return token
     return None
+
+
+async def _close_other_browsers() -> None:
+    async with _guard:
+        signup_tokens = list(_signups)
+        account_ids = list(_sessions)
+    for token in signup_tokens:
+        await close_signup(token)
+    for account_id in account_ids:
+        await close_login(account_id)
 
 
 async def _image_from_value(page, value: str) -> str | None:
@@ -362,15 +368,28 @@ async def _image_from_value(page, value: str) -> str | None:
 
 async def _open_qr(page) -> list:
     captured: list = []
+    issued = {"qr": False}
+
+    async def freeze_qr(route):
+        if issued["qr"]:
+            await route.abort()
+            return
+        issued["qr"] = True
+        await route.continue_()
+
+    await page.route("**/*get_qrcode*", freeze_qr)
 
     async def handle(response):
         url = response.url.lower()
         if "qrcode" not in url and "qr_code" not in url and "qrconnect" not in url:
             return
         try:
-            captured.append(await response.json())
+            body = await response.json()
         except Exception:
-            return
+            body = {"message": "non-json"}
+        if isinstance(body, dict):
+            body["_http"] = response.status
+            captured.append(body)
 
     page.on("response", lambda response: asyncio.create_task(handle(response)))
     await page.goto("https://www.tiktok.com/login/qrcode", wait_until="domcontentloaded", timeout=20000)
@@ -432,6 +451,7 @@ async def _qr_image(page, captured: list) -> str:
 
 async def start_qr_login(account_id: int, username: str, proxy_url: str | None) -> dict:
     await _drop_expired()
+    await _close_other_browsers()
     await close_login(account_id)
     pw = browser = None
     try:
@@ -440,7 +460,7 @@ async def start_qr_login(account_id: int, username: str, proxy_url: str | None) 
         image = await _qr_image(page, captured)
         qr_token = None
         for item in captured:
-            qr_token = _extract_login_token(item) or qr_token
+            qr_token = _token_for_qr(item) or qr_token
         async with _guard:
             _sessions[account_id] = {
                 "pw": pw,
@@ -547,6 +567,7 @@ async def close_signup(token: str) -> None:
 async def start_qr_signup(target_username: str | None = None) -> dict:
     await _drop_expired()
     await _load_dead_proxies()
+    await _close_other_browsers()
     pool = _proxy_pool()
     ordered: list[str | None] = []
     if pool:
@@ -576,7 +597,7 @@ async def start_qr_signup(target_username: str | None = None) -> dict:
                 image = await _grab_qr(page)
             qr_token = None
             for item in captured:
-                qr_token = _extract_login_token(item) or qr_token
+                qr_token = _token_for_qr(item) or qr_token
             async with _guard:
                 _signups[token] = {
                     "pw": pw,
