@@ -124,17 +124,22 @@ export default function App() {
   }, [user, loadData]);
 
   useEffect(() => {
-    if (!loginUi || loginUi.mode !== "qr") return;
+    if (!loginUi || (loginUi.mode !== "qr" && loginUi.mode !== "qr-new")) return;
     const timer = setInterval(async () => {
-      const r = await api(`/api/accounts/${loginUi.id}/login/qr-status`);
+      const url = loginUi.mode === "qr-new"
+        ? `/api/accounts/qr-signup/${loginUi.token}`
+        : `/api/accounts/${loginUi.id}/login/qr-status`;
+      const r = await api(url);
       const data = await r.json();
       if (data.status === "authenticated") {
-        notify("Телефон подтвердил вход");
+        notify(loginUi.mode === "qr-new" ? `Добавлен ${data.username}` : "Телефон подтвердил вход");
         setLoginUi(null);
         loadData();
       } else if (data.status === "failed" || data.status === "expired") {
         notify(data.detail || "QR истёк", "err");
         setLoginUi(null);
+      } else if (data.detail && data.detail !== loginUi.message) {
+        setLoginUi((prev: any) => prev ? { ...prev, message: data.detail } : prev);
       }
     }, 2000);
     return () => clearInterval(timer);
@@ -359,6 +364,18 @@ export default function App() {
             <div className="flex flex-wrap justify-between items-center gap-2">
               <h2 className="text-2xl font-bold">Аккаунты TikTok</h2>
               <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    notify("Готовлю QR для сканера...");
+                    const r = await api("/api/accounts/qr-signup", { method: "POST" });
+                    const d = await r.json();
+                    if (!r.ok || d.status !== "qr_ready") return notify(d.detail || "QR не открылся", "err");
+                    setLoginUi({ mode: "qr-new", token: d.token, message: d.detail, image: d.image_base64 });
+                  }}
+                  className={btn}
+                >
+                  Добавить сканером
+                </button>
                 <input placeholder="Поиск по @username..." value={accSearch} onChange={e => setAccSearch(e.target.value)} className={`${inp} w-56`} />
                 <button onClick={() => exportJson("tiktok_accounts.json", accounts)} className="px-3 py-2 bg-slate-800 rounded-lg text-xs">📥 Экспорт JSON</button>
               </div>
@@ -387,7 +404,9 @@ export default function App() {
             {loginUi && (
               <div className={`${card} border-cyan-500/40 space-y-3`}>
                 <div className="flex justify-between">
-                  <h3 className="font-bold text-cyan-400">Вход в аккаунт #{loginUi.id}</h3>
+                  <h3 className="font-bold text-cyan-400">
+                    {loginUi.mode === "qr-new" ? "Сканер: добавление аккаунта" : `Вход в аккаунт #${loginUi.id}`}
+                  </h3>
                   <button onClick={() => setLoginUi(null)} className="text-xs text-slate-400">✕ Закрыть</button>
                 </div>
                 <p className="text-sm text-slate-300">{loginUi.message}</p>

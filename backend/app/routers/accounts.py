@@ -12,12 +12,41 @@ from app.security import (
 from app.services.integration_service import integration_service
 from app.services.login_service import (
     poll_qr_login,
+    poll_qr_signup,
     start_password_login,
     start_qr_login,
+    start_qr_signup,
     submit_login_code,
 )
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+
+
+@router.post("/qr-signup")
+async def begin_qr_signup(admin: AdminUser = Depends(require_role("admin"))):
+    return await start_qr_signup()
+
+
+@router.get("/qr-signup/{token}")
+async def watch_qr_signup(
+    token: str,
+    admin: AdminUser = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await poll_qr_signup(token)
+    username = result.get("username")
+    if result.get("status") == "authenticated" and username:
+        acc = await db.scalar(select(TikTokAccount).where(TikTokAccount.username == username))
+        if acc:
+            acc.auth_state = "authenticated"
+            acc.is_active = True
+        else:
+            acc = TikTokAccount(username=username, auth_state="authenticated", is_active=True)
+            db.add(acc)
+        await db.commit()
+        await db.refresh(acc)
+        result["account_id"] = acc.id
+    return result
 
 
 def _serialize_account(acc: TikTokAccount) -> dict:

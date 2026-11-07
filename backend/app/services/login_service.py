@@ -1,7 +1,9 @@
 import asyncio
 import base64
 import json
+import re
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -9,6 +11,7 @@ from app.logger import log_event
 from app.services.integration_service import integration_service
 
 _sessions: dict[int, dict] = {}
+_signups: dict[str, dict] = {}
 _guard = asyncio.Lock()
 _LOGIN_TTL_SEC = 180
 
@@ -166,6 +169,111 @@ async def poll_qr_login(account_id: int) -> dict:
         await close_login(account_id)
         return {"status": "failed", "detail": "Сессия QR оборвалась. Запусти QR ещё раз."}
     return {"status": "waiting_scan", "detail": "Жду подтверждение в приложении TikTok"}
+
+
+async def _open_qr(page) -> None:
+    await page.goto("https://www.tiktok.com/login/qrcode", wait_until="domcontentloaded", timeout=45000)
+    for label in ("Use QR code", "QR code", "QR-код", "Сканировать"):
+        button = page.get_by_text(label, exact=False).first
+        try:
+            if await button.count():
+                await button.click(timeout=1500)
+                break
+        except Exception:
+            continue
+    await page.wait_for_timeout(1200)
+
+
+async def _read_username(page) -> str | None:
+    script = """() => {
+      const link = document.querySelector('a[data-e2e="nav-profile"]')
+        || document.querySelector('a[href^="/@"]');
+      return link ? (link.getAttribute('href') || '') : '';
+    }"""
+    for _ in range(2):
+        try:
+            href = await page.evaluate(script)
+            if href and "/@" in href:
+                name = href.split("/@", 1)[1].split("/", 1)[0].split("?", 1)[0]
+                if re.fullmatch(r"[A-Za-z0-9._]{2,24}", name):
+                    return name
+        except Exception:
+            pass
+        try:
+            await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(1500)
+        except Exception:
+            break
+    match = re.search(r"tiktok\.com/@([A-Za-z0-9._]{2,24})", page.url or "")
+    return match.group(1) if match else None
+
+
+async def close_signup(token: str) -> None:
+    async with _guard:
+        sess = _signups.pop(token, None)
+    if sess:
+        await _shutdown_handles(sess.get("pw"), sess.get("browser"))
+
+
+async def start_qr_signup() -> dict:
+    await _drop_expired()
+    token = uuid.uuid4().hex
+    pw = browser = None
+    try:
+        pw, browser, context, page = await _launch(None)
+        await _open_qr(page)
+        image = await _grab_qr(page)
+        async with _guard:
+            _signups[token] = {
+                "pw": pw,
+                "browser": browser,
+                "context": context,
+                "page": page,
+                "created": time.time(),
+            }
+        return {
+            "status": "qr_ready",
+            "token": token,
+            "image_base64": image,
+            "detail": "На телефоне открой TikTok → Профиль → меню ☰ → Сканировать и наведи камеру на QR. Пароль и прокси не нужны.",
+        }
+    except Exception:
+        await _shutdown_handles(pw, browser)
+        await log_event("backend", "WARNING", "qr_signup_failed", "Не удалось открыть QR для нового аккаунта")
+        return {"status": "failed", "detail": "Не удалось открыть QR. Сервер должен открывать tiktok.com."}
+
+
+async def poll_qr_signup(token: str) -> dict:
+    now = time.time()
+    async with _guard:
+        expired = [key for key, sess in _signups.items() if now - sess.get("created", 0) > _LOGIN_TTL_SEC]
+    for key in expired:
+        await close_signup(key)
+    async with _guard:
+        sess = _signups.get(token)
+    if not sess:
+        return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
+    try:
+        if not await _logged_in(sess["context"], sess["page"]):
+            return {"status": "waiting_scan", "detail": "Жду, пока ты отсканируешь QR в приложении TikTok"}
+        username = await _read_username(sess["page"])
+        if not username:
+            seen = sess.get("login_seen") or now
+            sess["login_seen"] = seen
+            if now - seen > 25:
+                await close_signup(token)
+                return {"status": "failed", "detail": "Телефон подтвердил вход, но имя профиля не прочиталось. Запусти QR ещё раз."}
+            return {"status": "waiting_scan", "detail": "Телефон подтвердил вход. Читаю имя профиля..."}
+        await _persist(sess["context"], f"@{username}")
+        await close_signup(token)
+        return {
+            "status": "authenticated",
+            "username": f"@{username}",
+            "detail": f"Аккаунт @{username} добавлен",
+        }
+    except Exception:
+        await close_signup(token)
+        return {"status": "failed", "detail": "Сессия QR оборвалась. Нажми «Добавить сканером» ещё раз."}
 
 
 async def start_password_login(
