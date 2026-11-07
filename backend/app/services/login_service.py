@@ -270,6 +270,8 @@ def _reply_text(payload) -> str:
 async def _ask_confirm(sess) -> str | None:
     phase = None
     for item in sess.get("events") or []:
+        if item.get("_src") == "poll" and _qr_phase(item) == "expired":
+            continue
         phase = _merge_phase(phase, item)
     token = sess.get("qr_token")
     if not token:
@@ -301,16 +303,63 @@ async def _ask_confirm(sess) -> str | None:
         sess["reply"] = "обратный запрос не прошёл: " + _public_error(exc)
         return phase
     if isinstance(fresh, dict):
-        sess.setdefault("events", []).append(fresh)
-        phase = _merge_phase(phase, fresh)
+        fresh["_src"] = "poll"
+        if not (fresh.get("_http") == 200 and _qr_phase(fresh) == "expired" and phase in {None, "new"}):
+            sess.setdefault("events", []).append(fresh)
+            phase = _merge_phase(phase, fresh)
         sess["reply"] = _reply_text(fresh) or "TikTok ответил пустым телом"
     else:
         sess["reply"] = "TikTok ответил не JSON"
     return phase
 
 
-async def _fresh_qr_image(sess) -> str | None:
-    return None
+async def _sync_live_qr(sess) -> str | None:
+    token = sess.get("qr_token")
+    image_value = None
+    for item in sess.get("events") or []:
+        if item.get("_src") != "page":
+            continue
+        found = _token_for_qr(item)
+        if not found:
+            continue
+        token = found
+        image_value = _extract_qr_value(item)
+    if token:
+        sess["qr_token"] = token
+    if not image_value or image_value == sess.get("shown_qr"):
+        return None
+    image = await _image_from_value(sess["page"], image_value)
+    if image:
+        sess["shown_qr"] = image_value
+    return image
+
+
+async def _refresh_expired_qr(sess) -> str | None:
+    if sess.get("reloads", 0) >= 1:
+        return None
+    sess["reloads"] = sess.get("reloads", 0) + 1
+    events = sess.get("events")
+    if isinstance(events, list):
+        events.clear()
+    sess["qr_token"] = None
+    sess["shown_qr"] = None
+    page = sess["page"]
+    try:
+        await page.goto("https://www.tiktok.com/login/qrcode", wait_until="domcontentloaded", timeout=20000)
+    except Exception:
+        return None
+    for _ in range(8):
+        if _sync_token_ready(sess):
+            break
+        await page.wait_for_timeout(500)
+    return await _sync_live_qr(sess)
+
+
+def _sync_token_ready(sess) -> bool:
+    for item in reversed(sess.get("events") or []):
+        if item.get("_src") == "page" and _token_for_qr(item):
+            return True
+    return False
 
 
 def _extract_qr_value(payload):
@@ -368,16 +417,6 @@ async def _image_from_value(page, value: str) -> str | None:
 
 async def _open_qr(page) -> list:
     captured: list = []
-    issued = {"qr": False}
-
-    async def freeze_qr(route):
-        if issued["qr"]:
-            await route.abort()
-            return
-        issued["qr"] = True
-        await route.continue_()
-
-    await page.route("**/*get_qrcode*", freeze_qr)
 
     async def handle(response):
         url = response.url.lower()
@@ -389,6 +428,7 @@ async def _open_qr(page) -> list:
             body = {"message": "non-json"}
         if isinstance(body, dict):
             body["_http"] = response.status
+            body["_src"] = "page"
             captured.append(body)
 
     page.on("response", lambda response: asyncio.create_task(handle(response)))
@@ -497,9 +537,18 @@ async def poll_qr_login(account_id: int) -> dict:
     try:
         phase = await _ask_confirm(sess)
         reply = sess.get("reply") or "обратного ответа нет"
-        if phase == "expired" and now - sess.get("created", now) > 45:
-            await close_login(account_id)
-            return {"status": "expired", "detail": "QR истёк. Нажми «QR с телефона» ещё раз."}
+        if phase == "expired":
+            image = await _refresh_expired_qr(sess)
+            if image:
+                return {
+                    "status": "waiting_scan",
+                    "detail": "Старый код истёк. На экране новый, сканируй его.",
+                    "image_base64": image,
+                }
+            if sess.get("reloads", 0) >= 1:
+                await close_login(account_id)
+                return {"status": "expired", "detail": "QR истёк. Нажми «QR с телефона» ещё раз."}
+            phase = None
         logged = await _logged_in(sess["context"], sess["page"])
         if phase in {"confirmed", "success"} and not logged:
             try:
@@ -512,7 +561,7 @@ async def poll_qr_login(account_id: int) -> dict:
             await close_login(account_id)
             return {"status": "authenticated", "detail": f"Сессия записана в {sess['username']}"}
         if phase == "scanned":
-            image = await _fresh_qr_image(sess)
+            image = await _sync_live_qr(sess)
             payload = {"status": "waiting_scan", "detail": f"Телефон увидел код. Нажми «Это я» для {sess['username']}."}
             if image:
                 payload["image_base64"] = image
@@ -520,7 +569,7 @@ async def poll_qr_login(account_id: int) -> dict:
     except Exception:
         await close_login(account_id)
         return {"status": "failed", "detail": "Сессия QR оборвалась. Нажми «QR с телефона» ещё раз."}
-    image = await _fresh_qr_image(sess)
+    image = await _sync_live_qr(sess)
     payload = {
         "status": "waiting_scan",
         "detail": f"Обратный ответ TikTok: {reply}",
@@ -639,10 +688,17 @@ async def poll_qr_signup(token: str) -> dict:
     try:
         phase = await _ask_confirm(sess)
         reply = sess.get("reply") or "обратного ответа нет"
-        if phase == "expired" and now - sess.get("created", now) > 45:
-            await close_signup(token)
-            return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
         if phase == "expired":
+            image = await _refresh_expired_qr(sess)
+            if image:
+                return {
+                    "status": "waiting_scan",
+                    "detail": "Старый код истёк. На экране новый, сканируй его.",
+                    "image_base64": image,
+                }
+            if sess.get("reloads", 0) >= 1:
+                await close_signup(token)
+                return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
             phase = None
         logged = await _logged_in(sess["context"], sess["page"])
         if phase in {"confirmed", "success"} and not logged:
@@ -652,7 +708,7 @@ async def poll_qr_signup(token: str) -> dict:
                 pass
             logged = await _logged_in(sess["context"], sess["page"])
         if not logged and phase != "confirmed":
-            image = await _fresh_qr_image(sess)
+            image = await _sync_live_qr(sess)
             if phase == "scanned":
                 detail = "Телефон увидел код. Нажми «Это я» в TikTok."
             elif phase == "new":
