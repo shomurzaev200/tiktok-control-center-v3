@@ -248,6 +248,53 @@ def _merge_phase(current: str | None, payload) -> str | None:
     return current or fresh
 
 
+def _reply_text(payload) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    bits = []
+    if payload.get("message"):
+        bits.append(str(payload["message"])[:40])
+    if data.get("status") is not None:
+        bits.append("status=" + str(data.get("status"))[:40])
+    if data.get("error_code") is not None:
+        bits.append("code=" + str(data.get("error_code"))[:20])
+    desc = data.get("description") or data.get("captcha") or ""
+    if desc:
+        bits.append(str(desc)[:80])
+    return ", ".join(bits)[:180]
+
+
+async def _ask_confirm(sess) -> str | None:
+    phase = None
+    for item in sess.get("events") or []:
+        phase = _merge_phase(phase, item)
+    token = sess.get("qr_token")
+    if not token:
+        sess["reply"] = "токен QR не найден, обратный запрос не отправлен"
+        return phase
+    if phase in {"confirmed", "expired"}:
+        return phase
+    url = (
+        "https://www.tiktok.com/passport/web/check_qrconnect/?aid=1459&token="
+        + token
+        + "&next=https%3A%2F%2Fwww.tiktok.com%2F"
+    )
+    try:
+        response = await sess["page"].context.request.get(url, timeout=15000)
+        fresh = await response.json()
+    except Exception as exc:
+        sess["reply"] = "обратный запрос не прошёл: " + _public_error(exc)
+        return phase
+    if isinstance(fresh, dict):
+        sess.setdefault("events", []).append(fresh)
+        phase = _merge_phase(phase, fresh)
+        sess["reply"] = _reply_text(fresh) or "TikTok ответил пустым телом"
+    else:
+        sess["reply"] = "TikTok ответил не JSON"
+    return phase
+
+
 async def _fresh_qr_image(sess) -> str | None:
     value = None
     for item in reversed(sess.get("events") or []):
@@ -428,27 +475,8 @@ async def poll_qr_login(account_id: int) -> dict:
         return {"status": "idle", "detail": "QR не запущен"}
     now = time.time()
     try:
-        phase = None
-        for item in sess.get("events") or []:
-            phase = _merge_phase(phase, item)
-        qr_token = sess.get("qr_token")
-        if qr_token and phase not in {"confirmed", "success", "expired"}:
-            try:
-                fresh = await sess["page"].evaluate(
-                    """async (loginToken) => {
-                      const next = encodeURIComponent('https://www.tiktok.com/');
-                      const url = '/passport/web/check_qrconnect/?aid=1459&token='
-                        + encodeURIComponent(loginToken) + '&next=' + next;
-                      const response = await fetch(url, {credentials: 'include'});
-                      return await response.json();
-                    }""",
-                    qr_token,
-                )
-                if isinstance(fresh, dict):
-                    sess["events"].append(fresh)
-                    phase = _merge_phase(phase, fresh)
-            except Exception:
-                pass
+        phase = await _ask_confirm(sess)
+        reply = sess.get("reply") or "обратного ответа нет"
         if phase == "expired" and now - sess.get("created", now) > 45:
             await close_login(account_id)
             return {"status": "expired", "detail": "QR истёк. Нажми «QR с телефона» ещё раз."}
@@ -475,7 +503,7 @@ async def poll_qr_login(account_id: int) -> dict:
     image = await _fresh_qr_image(sess)
     payload = {
         "status": "waiting_scan",
-        "detail": "TikTok ещё не видит скан. Если картинка на экране сменилась, сканируй новую.",
+        "detail": f"Обратный ответ TikTok: {reply}",
     }
     if image:
         payload["image_base64"] = image
@@ -588,27 +616,8 @@ async def poll_qr_signup(token: str) -> dict:
     if not sess:
         return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
     try:
-        phase = None
-        for item in sess.get("events") or []:
-            phase = _merge_phase(phase, item)
-        qr_token = sess.get("qr_token")
-        if qr_token and phase not in {"confirmed", "success", "expired"}:
-            try:
-                fresh = await sess["page"].evaluate(
-                    """async (loginToken) => {
-                      const next = encodeURIComponent('https://www.tiktok.com/');
-                      const url = '/passport/web/check_qrconnect/?aid=1459&token='
-                        + encodeURIComponent(loginToken) + '&next=' + next;
-                      const response = await fetch(url, {credentials: 'include'});
-                      return await response.json();
-                    }""",
-                    qr_token,
-                )
-                if isinstance(fresh, dict):
-                    sess["events"].append(fresh)
-                    phase = _merge_phase(phase, fresh)
-            except Exception:
-                pass
+        phase = await _ask_confirm(sess)
+        reply = sess.get("reply") or "обратного ответа нет"
         if phase == "expired" and now - sess.get("created", now) > 45:
             await close_signup(token)
             return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
@@ -628,7 +637,7 @@ async def poll_qr_signup(token: str) -> dict:
             elif phase == "new":
                 detail = "TikTok ещё не видит скан. Если картинка сменилась, сканируй новую."
             else:
-                detail = "Жду скан. Если картинка на экране сменилась, сканируй новую."
+                detail = f"Обратный ответ TikTok: {reply}"
             payload = {"status": "waiting_scan", "detail": detail}
             if image:
                 payload["image_base64"] = image
