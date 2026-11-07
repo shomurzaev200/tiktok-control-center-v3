@@ -140,8 +140,12 @@ export default function App() {
       } else if (data.status === "failed" || data.status === "expired") {
         notify(data.detail || "QR истёк", "err");
         setLoginUi(null);
-      } else if (data.detail && data.detail !== loginUi.message) {
-        setLoginUi((prev: any) => prev ? { ...prev, message: data.detail } : prev);
+      } else if (data.detail || data.image_base64) {
+        setLoginUi((prev: any) => prev ? {
+          ...prev,
+          message: data.detail || prev.message,
+          image: data.image_base64 || prev.image,
+        } : prev);
       }
     }, 2000);
     return () => clearInterval(timer);

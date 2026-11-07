@@ -210,13 +210,24 @@ async def _persist(context, username: str) -> None:
 
 
 def _qr_phase(payload) -> str | None:
+    names = {
+        "confirmed": "confirmed",
+        "success": "confirmed",
+        "scanned": "scanned",
+        "expired": "expired",
+        "new": "new",
+        "0": "new",
+        "1": "scanned",
+        "2": "confirmed",
+        "3": "expired",
+    }
     found: list[str] = []
 
     def walk(node) -> None:
         if isinstance(node, dict):
             for key, value in node.items():
-                if key in {"status", "qr_status"} and isinstance(value, str):
-                    found.append(value.lower())
+                if key in {"status", "qr_status"} and isinstance(value, (str, int)):
+                    found.append(names.get(str(value).lower(), ""))
                 else:
                     walk(value)
         elif isinstance(node, list):
@@ -224,10 +235,31 @@ def _qr_phase(payload) -> str | None:
                 walk(item)
 
     walk(payload)
-    for name in ("confirmed", "success", "scanned", "expired"):
+    for name in ("confirmed", "scanned", "expired", "new"):
         if name in found:
             return name
     return None
+
+
+def _merge_phase(current: str | None, payload) -> str | None:
+    fresh = _qr_phase(payload)
+    if fresh in {"confirmed", "scanned", "expired"}:
+        return fresh
+    return current or fresh
+
+
+async def _fresh_qr_image(sess) -> str | None:
+    value = None
+    for item in reversed(sess.get("events") or []):
+        value = _extract_qr_value(item)
+        if value:
+            break
+    if not value or value == sess.get("shown_qr"):
+        return None
+    image = await _image_from_value(sess["page"], value)
+    if image:
+        sess["shown_qr"] = value
+    return image
 
 
 def _extract_qr_value(payload):
@@ -398,7 +430,7 @@ async def poll_qr_login(account_id: int) -> dict:
     try:
         phase = None
         for item in sess.get("events") or []:
-            phase = _qr_phase(item) or phase
+            phase = _merge_phase(phase, item)
         qr_token = sess.get("qr_token")
         if qr_token and phase not in {"confirmed", "success", "expired"}:
             try:
@@ -414,7 +446,7 @@ async def poll_qr_login(account_id: int) -> dict:
                 )
                 if isinstance(fresh, dict):
                     sess["events"].append(fresh)
-                    phase = _qr_phase(fresh) or phase
+                    phase = _merge_phase(phase, fresh)
             except Exception:
                 pass
         if phase == "expired" and now - sess.get("created", now) > 45:
@@ -432,11 +464,22 @@ async def poll_qr_login(account_id: int) -> dict:
             await close_login(account_id)
             return {"status": "authenticated", "detail": f"Сессия записана в {sess['username']}"}
         if phase == "scanned":
-            return {"status": "waiting_scan", "detail": f"Телефон увидел код. Нажми «Это я» для {sess['username']}."}
+            image = await _fresh_qr_image(sess)
+            payload = {"status": "waiting_scan", "detail": f"Телефон увидел код. Нажми «Это я» для {sess['username']}."}
+            if image:
+                payload["image_base64"] = image
+            return payload
     except Exception:
         await close_login(account_id)
         return {"status": "failed", "detail": "Сессия QR оборвалась. Нажми «QR с телефона» ещё раз."}
-    return {"status": "waiting_scan", "detail": "Жду подтверждение в приложении TikTok"}
+    image = await _fresh_qr_image(sess)
+    payload = {
+        "status": "waiting_scan",
+        "detail": "TikTok ещё не видит скан. Если картинка на экране сменилась, сканируй новую.",
+    }
+    if image:
+        payload["image_base64"] = image
+    return payload
 
 
 async def _read_username(page) -> str | None:
@@ -547,7 +590,7 @@ async def poll_qr_signup(token: str) -> dict:
     try:
         phase = None
         for item in sess.get("events") or []:
-            phase = _qr_phase(item) or phase
+            phase = _merge_phase(phase, item)
         qr_token = sess.get("qr_token")
         if qr_token and phase not in {"confirmed", "success", "expired"}:
             try:
@@ -563,7 +606,7 @@ async def poll_qr_signup(token: str) -> dict:
                 )
                 if isinstance(fresh, dict):
                     sess["events"].append(fresh)
-                    phase = _qr_phase(fresh) or phase
+                    phase = _merge_phase(phase, fresh)
             except Exception:
                 pass
         if phase == "expired" and now - sess.get("created", now) > 45:
@@ -579,9 +622,17 @@ async def poll_qr_signup(token: str) -> dict:
                 pass
             logged = await _logged_in(sess["context"], sess["page"])
         if not logged and phase != "confirmed":
+            image = await _fresh_qr_image(sess)
             if phase == "scanned":
-                return {"status": "waiting_scan", "detail": "Телефон увидел код. Нажми «Это я» в TikTok."}
-            return {"status": "waiting_scan", "detail": "Жду, пока ты отсканируешь QR в приложении TikTok"}
+                detail = "Телефон увидел код. Нажми «Это я» в TikTok."
+            elif phase == "new":
+                detail = "TikTok ещё не видит скан. Если картинка сменилась, сканируй новую."
+            else:
+                detail = "Жду скан. Если картинка на экране сменилась, сканируй новую."
+            payload = {"status": "waiting_scan", "detail": detail}
+            if image:
+                payload["image_base64"] = image
+            return payload
         username = (sess.get("target_username") or "").lstrip("@") or await _read_username(sess["page"])
         if username and not str(username).startswith("@"):
             username = username
