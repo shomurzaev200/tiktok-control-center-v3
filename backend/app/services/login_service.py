@@ -209,6 +209,27 @@ async def _persist(context, username: str) -> None:
     )
 
 
+def _qr_phase(payload) -> str | None:
+    found: list[str] = []
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in {"status", "qr_status"} and isinstance(value, str):
+                    found.append(value.lower())
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    for name in ("confirmed", "success", "scanned", "expired"):
+        if name in found:
+            return name
+    return None
+
+
 def _extract_qr_value(payload):
     if isinstance(payload, dict):
         for key in ("qrcode", "qr_code", "qrcode_index_url", "scan_qrcode_url"):
@@ -418,6 +439,7 @@ async def start_qr_signup() -> dict:
                     "context": context,
                     "page": page,
                     "created": time.time(),
+                    "events": captured,
                 }
             skipped = f" Пропущено мёртвых: {offset}." if offset else ""
             return {
@@ -447,7 +469,22 @@ async def poll_qr_signup(token: str) -> dict:
     if not sess:
         return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
     try:
-        if not await _logged_in(sess["context"], sess["page"]):
+        phase = None
+        for item in sess.get("events") or []:
+            phase = _qr_phase(item) or phase
+        if phase == "expired":
+            await close_signup(token)
+            return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
+        logged = await _logged_in(sess["context"], sess["page"])
+        if phase in {"confirmed", "success"} and not logged:
+            try:
+                await sess["page"].goto("https://www.tiktok.com/foryou", wait_until="domcontentloaded", timeout=20000)
+            except Exception:
+                pass
+            logged = await _logged_in(sess["context"], sess["page"])
+        if not logged and phase != "confirmed":
+            if phase == "scanned":
+                return {"status": "waiting_scan", "detail": "Телефон увидел код. Нажми «Это я» в TikTok."}
             return {"status": "waiting_scan", "detail": "Жду, пока ты отсканируешь QR в приложении TikTok"}
         username = await _read_username(sess["page"])
         if not username:
