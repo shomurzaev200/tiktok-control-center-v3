@@ -259,7 +259,7 @@ async def poll_qr_login(account_id: int) -> dict:
 
 
 async def _open_qr(page) -> None:
-    await page.goto("https://www.tiktok.com/login/qrcode", wait_until="domcontentloaded", timeout=45000)
+    await page.goto("https://www.tiktok.com/login/qrcode", wait_until="domcontentloaded", timeout=12000)
     for label in ("Use QR code", "QR code", "QR-код", "Сканировать"):
         button = page.get_by_text(label, exact=False).first
         try:
