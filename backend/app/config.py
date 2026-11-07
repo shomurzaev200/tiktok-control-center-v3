@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     OWNER_TELEGRAM_ID: int = 0
     TIKTOK_PROXY: str = ""
+    TIKTOK_PROXIES: str = ""
 
     PROFILES_DIR: str = "/app/profiles"
     BACKUPS_DIR: str = "/app/backups"

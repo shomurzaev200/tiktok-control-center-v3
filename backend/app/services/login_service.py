@@ -15,11 +15,53 @@ _sessions: dict[int, dict] = {}
 _signups: dict[str, dict] = {}
 _guard = asyncio.Lock()
 _LOGIN_TTL_SEC = 180
+_proxy_cursor = 0
+
+
+def _normalize_proxy_url(value: str) -> str:
+    raw = value.strip()
+    if raw.startswith("socks4://"):
+        raw = "socks5://" + raw[len("socks4://"):]
+    return raw
+
+
+def _proxy_pool() -> list[str]:
+    raw = ",".join(
+        part
+        for part in ((settings.TIKTOK_PROXY or ""), (settings.TIKTOK_PROXIES or ""))
+        if part.strip()
+    )
+    found: list[str] = []
+    for part in raw.replace(";", ",").replace("\n", ",").split(","):
+        item = _normalize_proxy_url(part)
+        if item and item not in found:
+            found.append(item)
+    return found
+
+
+def _pick_proxy(explicit: str | None) -> str | None:
+    if explicit and explicit.strip():
+        return _normalize_proxy_url(explicit)
+    pool = _proxy_pool()
+    if not pool:
+        return None
+    global _proxy_cursor
+    chosen = pool[_proxy_cursor % len(pool)]
+    _proxy_cursor += 1
+    return chosen
+
+
+def _proxy_label(proxy_url: str | None) -> str:
+    if not proxy_url:
+        return "без прокси"
+    parsed = urlparse(proxy_url)
+    if not parsed.hostname or not parsed.port:
+        return "прокси"
+    return f"{parsed.hostname}:{parsed.port}"
 
 
 def _proxy_for_browser(proxy_url: str | None) -> dict | None:
-    if not proxy_url:
-        proxy_url = (settings.TIKTOK_PROXY or "").strip() or None
+    proxy_url = _pick_proxy(proxy_url)
     if not proxy_url:
         return None
     parsed = urlparse(proxy_url)
@@ -241,9 +283,10 @@ async def close_signup(token: str) -> None:
 async def start_qr_signup() -> dict:
     await _drop_expired()
     token = uuid.uuid4().hex
+    chosen = _pick_proxy(None)
     pw = browser = None
     try:
-        pw, browser, context, page = await _launch(None)
+        pw, browser, context, page = await _launch(chosen)
         await _open_qr(page)
         image = await _grab_qr(page)
         async with _guard:
@@ -258,7 +301,7 @@ async def start_qr_signup() -> dict:
             "status": "qr_ready",
             "token": token,
             "image_base64": image,
-            "detail": "На телефоне открой TikTok → Профиль → меню ☰ → Сканировать и наведи камеру на QR. Пароль и прокси не нужны.",
+            "detail": f"Прокси {_proxy_label(chosen)}. На телефоне открой TikTok → Профиль → меню ☰ → Сканировать. Следующее нажатие возьмёт следующий прокси.",
         }
     except Exception:
         await _shutdown_handles(pw, browser)
