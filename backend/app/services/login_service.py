@@ -248,6 +248,25 @@ def _extract_qr_value(payload):
     return None
 
 
+def _extract_login_token(payload) -> str | None:
+    if isinstance(payload, dict):
+        value = payload.get("token")
+        if isinstance(value, str) and 16 < len(value) < 2000:
+            return value
+        for key, child in payload.items():
+            if key in {"qrcode", "qrcode_index_url", "scan_qrcode_url"}:
+                continue
+            found = _extract_login_token(child)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for item in payload:
+            found = _extract_login_token(item)
+            if found:
+                return found
+    return None
+
+
 async def _image_from_value(page, value: str) -> str | None:
     if value.startswith("data:image"):
         return value.split(",", 1)[-1]
@@ -267,7 +286,7 @@ async def _open_qr(page) -> list:
 
     async def handle(response):
         url = response.url.lower()
-        if "qrcode" not in url and "qr_code" not in url:
+        if "qrcode" not in url and "qr_code" not in url and "qrconnect" not in url:
             return
         try:
             captured.append(await response.json())
@@ -375,7 +394,10 @@ async def _read_username(page) -> str | None:
     script = """() => {
       const link = document.querySelector('a[data-e2e="nav-profile"]')
         || document.querySelector('a[href^="/@"]');
-      return link ? (link.getAttribute('href') || '') : '';
+      if (link) return link.getAttribute('href') || '';
+      const html = document.documentElement ? document.documentElement.innerHTML : '';
+      const match = html.match(/"uniqueId":"([A-Za-z0-9._]{2,24})"/);
+      return match ? '/@' + match[1] : '';
     }"""
     for _ in range(2):
         try:
@@ -432,6 +454,9 @@ async def start_qr_signup() -> dict:
                         break
             if not image:
                 image = await _grab_qr(page)
+            qr_token = None
+            for item in captured:
+                qr_token = _extract_login_token(item) or qr_token
             async with _guard:
                 _signups[token] = {
                     "pw": pw,
@@ -440,6 +465,7 @@ async def start_qr_signup() -> dict:
                     "page": page,
                     "created": time.time(),
                     "events": captured,
+                    "qr_token": qr_token,
                 }
             skipped = f" Пропущено мёртвых: {offset}." if offset else ""
             return {
@@ -472,6 +498,24 @@ async def poll_qr_signup(token: str) -> dict:
         phase = None
         for item in sess.get("events") or []:
             phase = _qr_phase(item) or phase
+        qr_token = sess.get("qr_token")
+        if qr_token and phase not in {"confirmed", "success", "expired"}:
+            try:
+                fresh = await sess["page"].evaluate(
+                    """async (loginToken) => {
+                      const next = encodeURIComponent('https://www.tiktok.com/');
+                      const url = '/passport/web/check_qrconnect/?aid=1459&token='
+                        + encodeURIComponent(loginToken) + '&next=' + next;
+                      const response = await fetch(url, {credentials: 'include'});
+                      return await response.json();
+                    }""",
+                    qr_token,
+                )
+                if isinstance(fresh, dict):
+                    sess["events"].append(fresh)
+                    phase = _qr_phase(fresh) or phase
+            except Exception:
+                pass
         if phase == "expired":
             await close_signup(token)
             return {"status": "expired", "detail": "QR истёк. Нажми «Добавить сканером» ещё раз."}
