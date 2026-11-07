@@ -11,11 +11,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+COPY entrypoint.sh /entrypoint.sh
 RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin appuser \
     && mkdir -p /app/profiles /app/backups \
-    && chown -R appuser:appgroup /app
+    && chown -R appuser:appgroup /app \
+    && chmod 755 /entrypoint.sh
 
-USER appuser
+USER root
+ENTRYPOINT ["/entrypoint.sh"]
 
 EXPOSE 8000
 
