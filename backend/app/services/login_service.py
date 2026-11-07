@@ -877,24 +877,60 @@ async def start_manual_login() -> dict:
 async def manual_click(x: float, y: float) -> None:
     if not _manual:
         return
-    await _manual["page"].mouse.click(max(0, min(959, x)), max(0, min(639, y)))
+    page = _manual["page"]
+    px, py = max(0, min(959, x)), max(0, min(639, y))
+    await page.mouse.click(px, py)
+    await page.evaluate(
+        """([x, y]) => {
+          const el = document.elementFromPoint(x, y);
+          if (el) el.dispatchEvent(new MouseEvent('click', {bubbles: true, clientX: x, clientY: y}));
+        }""",
+        [px, py],
+    )
 
 
-async def manual_type(text: str) -> None:
+async def manual_type(text: str) -> str:
     if not _manual:
-        return
+        return "вход не запущен"
     page = _manual["page"]
     value = text[:200]
-    password = page.locator('input[type="password"]').last
-    if await password.count() and await password.is_visible():
-        await password.click()
-        await password.fill(value)
-        return
-    focused = page.locator("input:focus, textarea:focus").first
-    if await focused.count():
-        await focused.fill(value)
-        return
-    await page.keyboard.type(value, delay=30)
+    result = await page.evaluate(
+        """(value) => {
+          const visible = [...document.querySelectorAll('input')].filter((el) => {
+            const r = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            return r.width > 40 && r.height > 8 && style.visibility !== 'hidden' && style.display !== 'none';
+          });
+          const input = visible.find((el) => el.type === 'password') || visible[visible.length - 1];
+          if (!input) return 'поле не найдено';
+          input.focus();
+          const proto = Object.getPrototypeOf(input);
+          const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+          if (desc && desc.set) desc.set.call(input, value);
+          else input.value = value;
+          input.dispatchEvent(new Event('input', {bubbles: true}));
+          input.dispatchEvent(new Event('change', {bubbles: true}));
+          return 'записано ' + input.value.length + ' символов';
+        }""",
+        value,
+    )
+    return str(result)
+
+
+async def manual_show_password() -> str:
+    if not _manual:
+        return "вход не запущен"
+    result = await _manual["page"].evaluate(
+        """() => {
+          const input = document.querySelector('input[type="password"], input[type="text"]');
+          const root = input ? input.parentElement : document.body;
+          const eye = root.querySelector('svg, i, button, [role="button"]');
+          if (!eye) return 'глазок не найден';
+          eye.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+          return 'показываю пароль';
+        }"""
+    )
+    return str(result)
 
 
 async def manual_key(key: str) -> None:

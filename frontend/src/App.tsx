@@ -469,9 +469,16 @@ export default function App() {
                         if (!manualText) return;
                         const r = await api("/api/accounts/manual-login/type", { method: "POST", body: JSON.stringify({ text: manualText }) });
                         const d = await r.json();
-                        if (d.image_base64) setLoginUi((prev: any) => prev ? { ...prev, image: d.image_base64 } : prev);
+                        if (d.detail) notify(d.detail, d.detail.startsWith("записано") ? "ok" : "err");
+                        if (d.image_base64) setLoginUi((prev: any) => prev ? { ...prev, image: d.image_base64, message: d.detail || prev.message } : prev);
                         setManualText("");
                       }}>Ввести</button>
+                      <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={async () => {
+                        const r = await api("/api/accounts/manual-login/show", { method: "POST" });
+                        const d = await r.json();
+                        if (d.detail) notify(d.detail, d.detail === "показываю пароль" ? "ok" : "err");
+                        if (d.image_base64) setLoginUi((prev: any) => prev ? { ...prev, image: d.image_base64 } : prev);
+                      }}>Показать пароль</button>
                       <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={() => api("/api/accounts/manual-login/key", { method: "POST", body: JSON.stringify({ key: "Enter" }) })}>Enter</button>
                       <button type="button" className="px-3 py-2 bg-slate-800 rounded-lg text-xs" onClick={() => api("/api/accounts/manual-login/key", { method: "POST", body: JSON.stringify({ key: "Backspace" }) })}>Стереть</button>
                       <button type="button" className={btn} onClick={async () => {
