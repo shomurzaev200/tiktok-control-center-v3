@@ -5,11 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.logger import log_audit
 from app.models import AdminUser, TikTokAccount
-from app.schemas import AccountUpsertSchema
+from app.schemas import AccountUpsertSchema, LoginCodeSchema
 from app.security import (
     encrypt_secret, decrypt_secret, mask_proxy_url, get_current_admin, require_role
 )
 from app.services.integration_service import integration_service
+from app.services.login_service import (
+    poll_qr_login,
+    start_password_login,
+    start_qr_login,
+    submit_login_code,
+)
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -18,6 +24,8 @@ def _serialize_account(acc: TikTokAccount) -> dict:
     return {
         "id": acc.id,
         "username": acc.username,
+        "login_name": acc.login_name,
+        "has_password": bool(acc.password_encrypted),
         "proxy_masked": acc.proxy_masked or "direct (без прокси)",
         "proxy_status": acc.proxy_status,
         "proxy_ping_ms": acc.proxy_ping_ms,
@@ -78,7 +86,8 @@ async def get_account_detail(
     if not acc:
         raise HTTPException(status_code=404, detail="Аккаунт не найден")
     auth_diag = integration_service.check_account_auth_state(acc.username)
-    acc.auth_state = auth_diag["auth_state"]
+    if acc.auth_state not in {"needs_2fa", "qr_pending"} or auth_diag["auth_state"] == "authenticated":
+        acc.auth_state = auth_diag["auth_state"]
     await db.commit()
     return {**_serialize_account(acc), "auth_diagnostics": auth_diag}
 
@@ -102,6 +111,11 @@ async def upsert_account(
         acc = TikTokAccount(username=data.username, version=1)
         db.add(acc)
 
+    if data.login_name:
+        acc.login_name = data.login_name
+    if data.password:
+        acc.password_encrypted = encrypt_secret(data.password)
+
     if data.proxy_url:
         acc.proxy_url_encrypted = encrypt_secret(data.proxy_url)
         acc.proxy_masked = mask_proxy_url(data.proxy_url)
@@ -118,13 +132,97 @@ async def upsert_account(
     acc.daily_like_limit = data.daily_like_limit
 
     auth_diag = integration_service.check_account_auth_state(acc.username)
-    acc.auth_state = auth_diag["auth_state"]
+    if acc.auth_state not in {"needs_2fa", "qr_pending"} or auth_diag["auth_state"] == "authenticated":
+        acc.auth_state = auth_diag["auth_state"]
 
     await db.commit()
     await db.refresh(acc)
     ip = request.client.host if request.client else "unknown"
     await log_audit(admin.id, admin.username, "upsert_account", "tiktok_account", str(acc.id), acc.username, ip)
     return _serialize_account(acc)
+
+
+async def _account_or_404(db: AsyncSession, acc_id: int) -> TikTokAccount:
+    acc = await db.get(TikTokAccount, acc_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден")
+    return acc
+
+
+def _apply_auth_state(acc: TikTokAccount, result: dict) -> dict:
+    status = result.get("status")
+    if status == "authenticated":
+        acc.auth_state = "authenticated"
+    elif status == "needs_2fa":
+        acc.auth_state = "needs_2fa"
+    elif status == "qr_ready":
+        acc.auth_state = "qr_pending"
+    elif status == "failed":
+        acc.auth_state = "reauth_required"
+    return result
+
+
+@router.post("/{acc_id}/login")
+async def login_with_password(
+    acc_id: int,
+    admin: AdminUser = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    acc = await _account_or_404(db, acc_id)
+    password = decrypt_secret(acc.password_encrypted)
+    if not acc.login_name or not password:
+        raise HTTPException(status_code=400, detail="Сначала сохрани логин и пароль этого аккаунта")
+    result = await start_password_login(
+        acc.id,
+        acc.username,
+        acc.login_name,
+        password,
+        decrypt_secret(acc.proxy_url_encrypted),
+    )
+    _apply_auth_state(acc, result)
+    await db.commit()
+    return result
+
+
+@router.post("/{acc_id}/login/code")
+async def login_submit_code(
+    acc_id: int,
+    data: LoginCodeSchema,
+    admin: AdminUser = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    acc = await _account_or_404(db, acc_id)
+    result = await submit_login_code(acc.id, data.code)
+    _apply_auth_state(acc, result)
+    await db.commit()
+    return result
+
+
+@router.post("/{acc_id}/login/qr")
+async def login_with_qr(
+    acc_id: int,
+    admin: AdminUser = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    acc = await _account_or_404(db, acc_id)
+    result = await start_qr_login(acc.id, acc.username, decrypt_secret(acc.proxy_url_encrypted))
+    _apply_auth_state(acc, result)
+    await db.commit()
+    return result
+
+
+@router.get("/{acc_id}/login/qr-status")
+async def login_qr_status(
+    acc_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    acc = await _account_or_404(db, acc_id)
+    result = await poll_qr_login(acc.id)
+    if result.get("status") == "authenticated":
+        acc.auth_state = "authenticated"
+        await db.commit()
+    return result
 
 
 @router.post("/{acc_id}/check-proxy")

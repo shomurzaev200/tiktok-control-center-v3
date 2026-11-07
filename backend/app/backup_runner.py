@@ -2,6 +2,7 @@ import asyncio
 import signal
 from app.database import AsyncSessionLocal
 from app.logger import log_event
+from app.schema_bootstrap import ensure_schema
 from app.services.backup_service import backup_service
 
 stop_event = asyncio.Event()
@@ -14,6 +15,7 @@ def _handle_stop(*_):
 async def main():
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
+    await ensure_schema()
     await log_event("backup", "INFO", "service_started", "Сервис автоматического резервного копирования запущен")
 
     while not stop_event.is_set():

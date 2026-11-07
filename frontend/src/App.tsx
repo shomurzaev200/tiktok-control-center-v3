@@ -31,9 +31,11 @@ export default function App() {
 
   const [accSearch, setAccSearch] = useState("");
   const [accForm, setAccForm] = useState({
-    username: "@", proxy_url: "", daily_comment_limit: 25, daily_like_limit: 80,
+    username: "@", login_name: "", password: "", proxy_url: "", daily_comment_limit: 25, daily_like_limit: 80,
     work_hour_start: 9, work_hour_end: 23, min_delay_sec: 20, max_delay_sec: 55, version: undefined as number | undefined
   });
+  const [loginUi, setLoginUi] = useState<any>(null);
+  const [loginCode, setLoginCode] = useState("");
   const [srcForm, setSrcForm] = useState({ source_type: "main_likes", value: "", interval_minutes: 30 });
   const [vidFilter, setVidFilter] = useState({ search: "", status: "" });
   const [vidForm, setVidForm] = useState({ video_url: "", search_keyword: "" });
@@ -120,6 +122,23 @@ export default function App() {
     if (!user) return;
     loadData();
   }, [user, loadData]);
+
+  useEffect(() => {
+    if (!loginUi || loginUi.mode !== "qr") return;
+    const timer = setInterval(async () => {
+      const r = await api(`/api/accounts/${loginUi.id}/login/qr-status`);
+      const data = await r.json();
+      if (data.status === "authenticated") {
+        notify("Телефон подтвердил вход");
+        setLoginUi(null);
+        loadData();
+      } else if (data.status === "failed" || data.status === "expired") {
+        notify(data.detail || "QR истёк", "err");
+        setLoginUi(null);
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [loginUi, api]);
 
   useEffect(() => {
     if (!user) return;
@@ -351,17 +370,54 @@ export default function App() {
                 const res = await api("/api/accounts", { method: "POST", body: JSON.stringify(accForm) });
                 const data = await res.json();
                 if (!res.ok) return notify(data.detail || "Ошибка сохранения", "err");
-                notify("Аккаунт сохранён");
-                setAccForm({ ...accForm, username: "@", proxy_url: "", version: undefined });
+                notify("Аккаунт сохранён. Дальше нажми «Войти» или «QR с телефона».");
+                setAccForm({ ...accForm, username: "@", login_name: "", password: "", proxy_url: "", version: undefined });
                 loadData();
               }}
-              className={`${card} grid grid-cols-1 md:grid-cols-4 gap-3`}
+              className={`${card} grid grid-cols-1 md:grid-cols-3 gap-3`}
             >
-              <input placeholder="@username" value={accForm.username} onChange={e => setAccForm({ ...accForm, username: e.target.value })} className={inp} required />
+              <input placeholder="@username профиля" value={accForm.username} onChange={e => setAccForm({ ...accForm, username: e.target.value })} className={inp} required />
+              <input placeholder="Логин: почта, телефон или username" value={accForm.login_name} onChange={e => setAccForm({ ...accForm, login_name: e.target.value })} className={inp} />
+              <input type="password" autoComplete="new-password" placeholder="Пароль TikTok" value={accForm.password} onChange={e => setAccForm({ ...accForm, password: e.target.value })} className={inp} />
               <input placeholder="Прокси (http://user:pass@ip:port)" value={accForm.proxy_url} onChange={e => setAccForm({ ...accForm, proxy_url: e.target.value })} className={inp} />
               <input type="number" placeholder="Лимит комм/день" value={accForm.daily_comment_limit} onChange={e => setAccForm({ ...accForm, daily_comment_limit: +e.target.value })} className={inp} />
-              <button className={btn}>{accForm.version ? "Обновить аккаунт" : "Добавить аккаунт"}</button>
+              <button className={btn}>{accForm.version ? "Обновить аккаунт" : "Сохранить аккаунт"}</button>
             </form>
+
+            {loginUi && (
+              <div className={`${card} border-cyan-500/40 space-y-3`}>
+                <div className="flex justify-between">
+                  <h3 className="font-bold text-cyan-400">Вход в аккаунт #{loginUi.id}</h3>
+                  <button onClick={() => setLoginUi(null)} className="text-xs text-slate-400">✕ Закрыть</button>
+                </div>
+                <p className="text-sm text-slate-300">{loginUi.message}</p>
+                {loginUi.mode === "qr" && loginUi.image && (
+                  <img alt="QR TikTok" className="bg-white rounded-lg p-2 w-64 h-64 object-contain" src={`data:image/png;base64,${loginUi.image}`} />
+                )}
+                {loginUi.mode === "code" && (
+                  <form
+                    className="flex gap-2"
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      const r = await api(`/api/accounts/${loginUi.id}/login/code`, { method: "POST", body: JSON.stringify({ code: loginCode }) });
+                      const d = await r.json();
+                      if (!r.ok) return notify(d.detail || "Код не отправлен", "err");
+                      if (d.status === "authenticated") {
+                        notify("Код принят, аккаунт вошёл");
+                        setLoginUi(null);
+                        setLoginCode("");
+                        loadData();
+                        return;
+                      }
+                      notify(d.detail || "Код не подошёл", "err");
+                    }}
+                  >
+                    <input placeholder="Код из SMS, почты или приложения" value={loginCode} onChange={e => setLoginCode(e.target.value)} className={inp} required />
+                    <button className={btn}>Подтвердить код</button>
+                  </form>
+                )}
+              </div>
+            )}
 
             {selectedAccount && (
               <div className={`${card} border-cyan-500/40 space-y-2`}>
@@ -391,11 +447,14 @@ export default function App() {
                 <tbody className="divide-y divide-slate-800">
                   {accounts.map(a => (
                     <tr key={a.id}>
-                      <td className="py-2.5 font-bold text-cyan-300">{a.username}</td>
+                      <td className="py-2.5">
+                        <div className="font-bold text-cyan-300">{a.username}</div>
+                        <div className="text-xs text-slate-500">{a.login_name || "логин не задан"}{a.has_password ? " · пароль сохранён" : ""}</div>
+                      </td>
                       <td className="py-2.5 text-xs">{a.proxy_masked} <span className="text-slate-400">({a.proxy_status})</span></td>
                       <td className="py-2.5">
                         <span className={`px-2 py-0.5 rounded text-xs ${a.auth_state === "authenticated" ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"}`}>
-                          {a.auth_state === "reauth_required" ? "Требуется вход" : a.auth_state}
+                          {a.auth_state === "authenticated" ? "Вошёл" : a.auth_state === "needs_2fa" ? "Ждёт код" : a.auth_state === "qr_pending" ? "Ждёт скан" : a.auth_state === "reauth_required" ? "Нужен вход" : a.auth_state}
                         </span>
                       </td>
                       <td className="py-2.5">{a.comments_today}/{a.daily_comment_limit} (ошибок: {a.total_errors})</td>
@@ -410,7 +469,41 @@ export default function App() {
                           Состояние
                         </button>
                         <button
-                          onClick={() => setAccForm({ ...accForm, username: a.username, proxy_url: "", daily_comment_limit: a.daily_comment_limit, version: a.version })}
+                          onClick={async () => {
+                            notify("Открываю вход TikTok...");
+                            const r = await api(`/api/accounts/${a.id}/login`, { method: "POST" });
+                            const d = await r.json();
+                            if (!r.ok) return notify(d.detail || "Ошибка входа", "err");
+                            if (d.status === "authenticated") {
+                              notify("Аккаунт вошёл");
+                              loadData();
+                              return;
+                            }
+                            if (d.status === "needs_2fa") {
+                              setLoginCode("");
+                              setLoginUi({ id: a.id, mode: "code", message: d.detail });
+                              return;
+                            }
+                            notify(d.detail || "Вход не выполнен", "err");
+                          }}
+                          className="text-xs px-2 py-1 bg-cyan-500/20 text-cyan-300 rounded"
+                        >
+                          Войти
+                        </button>
+                        <button
+                          onClick={async () => {
+                            notify("Готовлю QR...");
+                            const r = await api(`/api/accounts/${a.id}/login/qr`, { method: "POST" });
+                            const d = await r.json();
+                            if (!r.ok || d.status !== "qr_ready") return notify(d.detail || "QR не открылся", "err");
+                            setLoginUi({ id: a.id, mode: "qr", message: d.detail, image: d.image_base64 });
+                          }}
+                          className="text-xs px-2 py-1 bg-slate-800 rounded"
+                        >
+                          QR с телефона
+                        </button>
+                        <button
+                          onClick={() => setAccForm({ ...accForm, username: a.username, login_name: a.login_name || "", password: "", proxy_url: "", daily_comment_limit: a.daily_comment_limit, version: a.version })}
                           className="text-xs px-2 py-1 bg-slate-800 rounded text-cyan-300"
                         >
                           Изменить

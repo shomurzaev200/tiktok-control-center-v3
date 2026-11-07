@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import AsyncSessionLocal, redis_client
 from app.logger import log_event
 from app.models import TikTokAccount, QueueTask, TargetVideo, SystemLog, NotificationLog, SystemSetting
+from app.schema_bootstrap import ensure_schema
 from app.services.monitoring_service import monitoring_service
 
 dp = Dispatcher()
@@ -274,6 +275,7 @@ async def dispatch_notifications_loop(bot: Bot | None):
 
 
 async def main():
+    await ensure_schema()
     if not is_valid_bot_token(settings.TELEGRAM_BOT_TOKEN):
         await log_event(
             "telegram",

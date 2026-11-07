@@ -14,6 +14,7 @@ from app.logger import log_event
 from app.models import (
     TikTokAccount, TargetVideo, CommentTemplate, QueueTask
 )
+from app.schema_bootstrap import ensure_schema
 from app.security import decrypt_secret
 from app.services.integration_service import integration_service
 from app.services.monitoring_service import monitoring_service
@@ -235,6 +236,7 @@ async def worker_loop():
 
     semaphore = asyncio.Semaphore(max(1, settings.WORKER_CONCURRENCY))
     Path("/tmp/worker_healthy").touch()
+    await ensure_schema()
     await log_event("worker", "INFO", "worker_started", f"Worker Manager {WORKER_ID} запущен")
 
     async with AsyncSessionLocal() as db:

@@ -80,6 +80,8 @@ class TikTokAccount(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    login_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     proxy_url_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     proxy_masked: Mapped[str | None] = mapped_column(String(255), nullable=True)
     proxy_status: Mapped[str] = mapped_column(String(64), default="unchecked")

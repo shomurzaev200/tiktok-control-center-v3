@@ -15,6 +15,7 @@ from app.config import settings
 from app.database import engine, Base, get_db, redis_client, AsyncSessionLocal, measure_db_latency_ms, measure_redis_latency_ms
 from app.logger import log_event, mask_sensitive_text
 from app.models import TikTokAccount, TargetVideo, CommentTemplate, QueueTask
+from app.schema_bootstrap import ensure_schema
 from app.security import authenticate_websocket
 from app.routers import auth, accounts, sources_videos, comments_tasks, system
 
@@ -22,8 +23,7 @@ from app.routers import auth, accounts, sources_videos, comments_tasks, system
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        await ensure_schema()
         await log_event("backend", "INFO", "startup", "TikTok Control Center v3.0 API запущен")
     except Exception as exc:
         await log_event("backend", "ERROR", "startup_db_err", str(exc), exc)
@@ -97,11 +97,18 @@ async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     req_id = getattr(request.state, "request_id", None)
+    parts = []
+    for err in exc.errors():
+        loc = [str(item) for item in err.get("loc", []) if item != "body"]
+        msg = str(err.get("msg") or "некорректное значение")
+        if msg.startswith("Value error, "):
+            msg = msg[len("Value error, ") :]
+        parts.append(f"{'.'.join(loc)}: {msg}" if loc else msg)
     return JSONResponse(
         status_code=422,
         content={
             "ok": False,
-            "detail": mask_sensitive_text(str(exc.errors())),
+            "detail": mask_sensitive_text("; ".join(parts)[:400]),
             "request_id": req_id,
         },
     )

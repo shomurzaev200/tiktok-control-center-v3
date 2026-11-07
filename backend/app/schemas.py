@@ -56,6 +56,8 @@ class AdminCreateRequest(BaseModel):
 
 class AccountUpsertSchema(BaseModel):
     username: str = Field(min_length=2, max_length=100)
+    login_name: str | None = Field(default=None, max_length=100)
+    password: str | None = Field(default=None, max_length=128)
     proxy_url: str | None = Field(default=None, max_length=255)
     is_active: bool = True
     work_hour_start: int = Field(default=9, ge=0, le=23)
@@ -69,17 +71,32 @@ class AccountUpsertSchema(BaseModel):
     @field_validator("username")
     @classmethod
     def validate_tt_username(cls, v: str) -> str:
+        clean = v.strip().lstrip("@")
+        if not USERNAME_RE.match(f"@{clean}"):
+            raise ValueError("Username профиля: латиница, цифры, точка, _ и -. Пример: name_01")
+        return f"@{clean}"
+
+    @field_validator("login_name")
+    @classmethod
+    def validate_login_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
         clean = v.strip()
-        if not USERNAME_RE.match(clean):
-            raise ValueError("Некорректный формат имени пользователя TikTok")
-        return clean if clean.startswith("@") else f"@{clean}"
+        return clean or None
 
     @field_validator("proxy_url")
     @classmethod
     def validate_proxy(cls, v: str | None) -> str | None:
         if not v or not v.strip():
             return None
-        return validate_external_url(v.strip(), allow_proxy=True)
+        raw = v.strip()
+        if "://" not in raw:
+            raw = "http://" + raw
+        return validate_external_url(raw, allow_proxy=True)
+
+
+class LoginCodeSchema(BaseModel):
+    code: str = Field(min_length=4, max_length=8)
 
 
 class SourceCreateSchema(BaseModel):
