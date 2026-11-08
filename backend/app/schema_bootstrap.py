@@ -15,6 +15,9 @@ async def ensure_schema() -> None:
         await conn.execute(text(
             "ALTER TABLE tiktok_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT"
         ))
+        await conn.execute(text(
+            "ALTER TABLE discovery_sources ADD COLUMN IF NOT EXISTS cycle_done BOOLEAN NOT NULL DEFAULT false"
+        ))
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS alembic_version (
                 version_num VARCHAR(32) NOT NULL,

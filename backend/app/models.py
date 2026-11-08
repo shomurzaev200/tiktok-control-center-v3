@@ -66,6 +66,7 @@ class DiscoverySource(Base):
     value: Mapped[str] = mapped_column(String(255), unique=True)
     interval_minutes: Mapped[int] = mapped_column(Integer, default=30)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    cycle_done: Mapped[bool] = mapped_column(Boolean, default=False)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
