@@ -1,4 +1,5 @@
 import asyncio
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -48,7 +49,7 @@ def _storage_for(username: str | None) -> str | None:
     return str(path) if path.exists() else None
 
 
-async def _open_and_collect(url: str, storage_state: str | None) -> list[str]:
+async def _open_and_collect(url: str, storage_state: str | None, likes: bool = False) -> tuple[list[str], str]:
     from playwright.async_api import async_playwright
 
     pw = await async_playwright().start()
@@ -69,21 +70,40 @@ async def _open_and_collect(url: str, storage_state: str | None) -> list[str]:
         )
         page = await context.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-        await page.wait_for_timeout(4000)
-        await page.mouse.wheel(0, 1800)
+        await page.wait_for_timeout(3000)
+        if likes:
+            tab = page.locator('[data-e2e="liked-tab"], a[href$="/liked"]').first
+            if await tab.count():
+                await tab.click(timeout=4000)
+                await page.wait_for_timeout(3000)
+        await page.mouse.wheel(0, 2200)
         await page.wait_for_timeout(2000)
-        payload = await page.evaluate(_COLLECT_JS)
-        links = payload.get("links") or []
-        note = (payload.get("text") or "").replace("\n", " ")[:160]
-        unique = []
-        for href in links:
-            if href not in unique:
-                unique.append(href)
-        return unique[:20], note
+        html = await page.content()
+        title = await page.title()
+        links = _links_from_html(html)
+        note = f"{title}. {(await page.inner_text('body'))[:120].replace(chr(10), ' ')}"
+        return links[:20], note
     finally:
         if browser:
             await browser.close()
         await pw.stop()
+
+
+def _links_from_html(html: str) -> list[str]:
+    found: list[str] = []
+
+    def add(user: str, video_id: str) -> None:
+        link = f"https://www.tiktok.com/@{user}/video/{video_id}"
+        if link not in found:
+            found.append(link)
+
+    for user, video_id in re.findall(r"@([\w.\-]+)/video/(\d{8,})", html):
+        add(user, video_id)
+    for user, video_id in re.findall(r'"uniqueId":"([\w.\-]+)".{0,500}?"id":"(\d{15,22})"', html):
+        add(user, video_id)
+    for video_id, user in re.findall(r'"id":"(\d{15,22})".{0,500}?"uniqueId":"([\w.\-]+)"', html):
+        add(user, video_id)
+    return found
 
 
 def _source_url(source: DiscoverySource) -> str:
@@ -92,7 +112,7 @@ def _source_url(source: DiscoverySource) -> str:
         return f"https://www.tiktok.com/tag/{quote(tag)}"
     if source.source_type == "main_likes":
         name = source.value.lstrip("@")
-        return f"https://www.tiktok.com/@{name}/liked"
+        return f"https://www.tiktok.com/@{name}"
     return f"https://www.tiktok.com/search/video?q={quote(source.value)}"
 
 
@@ -109,7 +129,10 @@ async def discover_next_source(db) -> int:
     donor = source.value if source.source_type == "main_likes" else None
     account = None
     if donor:
-        account = await db.scalar(select(TikTokAccount).where(TikTokAccount.username == donor))
+        name = donor.lstrip("@")
+        account = await db.scalar(
+            select(TikTokAccount).where(TikTokAccount.username.in_([donor, name, f"@{name}"]))
+        )
     if account is None:
         account = await db.scalar(
             select(TikTokAccount).where(TikTokAccount.is_active.is_(True)).order_by(TikTokAccount.id.asc())
@@ -117,7 +140,10 @@ async def discover_next_source(db) -> int:
     storage = _storage_for(account.username if account else None)
     url = _source_url(source)
     try:
-        links, note = await asyncio.wait_for(_open_and_collect(url, storage), timeout=70)
+        links, note = await asyncio.wait_for(
+            _open_and_collect(url, storage, likes=source.source_type == "main_likes"),
+            timeout=70,
+        )
     except Exception as exc:
         source.last_error = str(exc).splitlines()[0][:180]
         await db.commit()
@@ -129,7 +155,7 @@ async def discover_next_source(db) -> int:
         if any(word in low for word in ("log in", "войти", "captcha", "verify")):
             source.last_error = "TikTok просит вход или проверку, с сервера страница пустая"
         else:
-            source.last_error = "TikTok не отдал ссылки на видео"
+            source.last_error = f"TikTok не отдал ссылки. Страница: {note[:140]}"
         from datetime import datetime, timezone
         source.last_synced_at = datetime.now(timezone.utc)
         await db.commit()
