@@ -10,9 +10,22 @@ from app.services.integration_service import integration_service
 from app.services.source_rotation import corrected_source_type
 
 _COLLECT_JS = """
-() => [...document.querySelectorAll('a[href*="/video/"]')]
-  .map((a) => a.href.split('?')[0])
-  .filter((href) => href.includes('/video/'))
+() => {
+  const found = new Set();
+  const add = (user, id) => {
+    if (user && id) found.add(`https://www.tiktok.com/@${user}/video/${id}`);
+  };
+  document.querySelectorAll('a[href*="/video/"]').forEach((a) => {
+    const match = a.href.match(/@([^/?]+)\/video\/(\\d+)/);
+    if (match) add(match[1], match[2]);
+  });
+  const html = document.documentElement.innerHTML;
+  const re = /@([\\w.\\-]+)\\/video\\/(\\d{8,})/g;
+  let match;
+  while ((match = re.exec(html))) add(match[1], match[2]);
+  const text = document.body ? document.body.innerText.slice(0, 400) : '';
+  return { links: [...found].slice(0, 20), text };
+}
 """
 
 
@@ -59,12 +72,14 @@ async def _open_and_collect(url: str, storage_state: str | None) -> list[str]:
         await page.wait_for_timeout(4000)
         await page.mouse.wheel(0, 1800)
         await page.wait_for_timeout(2000)
-        found = await page.evaluate(_COLLECT_JS)
+        payload = await page.evaluate(_COLLECT_JS)
+        links = payload.get("links") or []
+        note = (payload.get("text") or "").replace("\n", " ")[:160]
         unique = []
-        for href in found:
+        for href in links:
             if href not in unique:
                 unique.append(href)
-        return unique[:20]
+        return unique[:20], note
     finally:
         if browser:
             await browser.close()
@@ -102,11 +117,23 @@ async def discover_next_source(db) -> int:
     storage = _storage_for(account.username if account else None)
     url = _source_url(source)
     try:
-        links = await asyncio.wait_for(_open_and_collect(url, storage), timeout=70)
+        links, note = await asyncio.wait_for(_open_and_collect(url, storage), timeout=70)
     except Exception as exc:
         source.last_error = str(exc).splitlines()[0][:180]
         await db.commit()
         await log_event("worker", "WARNING", "discover_failed", f"{source.value}: {source.last_error}")
+        return 0
+
+    if not links:
+        low = (note or "").lower()
+        if any(word in low for word in ("log in", "войти", "captcha", "verify")):
+            source.last_error = "TikTok просит вход или проверку, с сервера страница пустая"
+        else:
+            source.last_error = "TikTok не отдал ссылки на видео"
+        from datetime import datetime, timezone
+        source.last_synced_at = datetime.now(timezone.utc)
+        await db.commit()
+        await log_event("worker", "WARNING", "discover_empty", f"{source.value}: {source.last_error} | {note}")
         return 0
 
     added = 0
