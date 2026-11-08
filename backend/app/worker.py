@@ -293,7 +293,7 @@ async def worker_loop():
                 delay = await execute_claimed_task(claimed.id)
 
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=min(delay, 10))
+                await asyncio.wait_for(stop_event.wait(), timeout=max(20, delay))
             except asyncio.TimeoutError:
                 pass
         except Exception as exc:
