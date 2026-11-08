@@ -94,7 +94,8 @@ services:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health/live"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 8
+      start_period: 40s
 
   worker:
     image: tiktok-control-backend:3.0.0
