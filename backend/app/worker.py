@@ -16,6 +16,7 @@ from app.models import (
 )
 from app.schema_bootstrap import ensure_schema
 from app.security import decrypt_secret
+from app.services.discover_sources import discover_next_source
 from app.services.integration_service import integration_service
 from app.services.monitoring_service import monitoring_service
 from app.services.queue_service import (
@@ -269,6 +270,18 @@ async def worker_loop():
             async with AsyncSessionLocal() as db:
                 await reset_daily_counters_if_needed(db)
                 await recover_expired_leases(db, worker_id=WORKER_ID)
+                pending_videos = await db.scalar(
+                    select(TargetVideo.id).where(
+                        TargetVideo.is_processed.is_(False),
+                        TargetVideo.is_excluded.is_(False),
+                        TargetVideo.video_status == "available",
+                    )
+                )
+                if not pending_videos:
+                    last_discover = await redis_client.get("discover:last")
+                    if not last_discover or time.time() - float(last_discover) > 180:
+                        await redis_client.set("discover:last", str(time.time()), ex=3600)
+                        await discover_next_source(db)
                 await schedule_pending_tasks_if_needed(db)
                 claimed = await claim_next_task_atomic(db, worker_id=WORKER_ID, queue_name="execution")
 

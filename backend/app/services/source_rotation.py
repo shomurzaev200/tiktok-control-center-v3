@@ -22,6 +22,18 @@ def normalize_source_value(source_type: str, value: str) -> str:
     return clean
 
 
+def corrected_source_type(source_type: str, value: str) -> str:
+    """Фразы и хештеги, случайно сохранённые как лайки, возвращает в свой тип."""
+    clean = " ".join(value.strip().split())
+    if clean.startswith("@") and " " not in clean:
+        return "main_likes"
+    if source_type == "main_likes" and " " in clean:
+        return "search_keyword"
+    if source_type == "main_likes":
+        return "hashtag"
+    return source_type
+
+
 def _ordered(rows: list[DiscoverySource]) -> list[DiscoverySource]:
     rank = {name: index for index, name in enumerate(TYPE_ORDER)}
     return sorted(rows, key=lambda row: (rank.get(row.source_type, 99), row.id))

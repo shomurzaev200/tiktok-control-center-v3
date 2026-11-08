@@ -37,7 +37,7 @@ export default function App() {
   const [loginUi, setLoginUi] = useState<any>(null);
   const [loginCode, setLoginCode] = useState("");
   const [manualText, setManualText] = useState("");
-  const [srcForm, setSrcForm] = useState({ source_type: "main_likes", value: "", interval_minutes: 30 });
+  const [srcForm, setSrcForm] = useState({ source_type: "search_keyword", value: "", interval_minutes: 30 });
   const [vidFilter, setVidFilter] = useState({ search: "", status: "" });
   const [vidForm, setVidForm] = useState({ video_url: "", search_keyword: "" });
   const [bulkVids, setBulkVids] = useState("");
@@ -715,7 +715,7 @@ export default function App() {
             <div className={card}>
               {sources.map(s => (
                 <div key={s.id} className="flex justify-between items-center py-2 border-b border-slate-800 text-sm">
-                  <span><b>[{s.source_type}]</b> {s.value} (интервал: {s.interval_minutes} мин.) {s.last_error && <span className="text-rose-400">Ошибка: {s.last_error}</span>}</span>
+                  <span><b>[{s.source_type === "search_keyword" ? "поиск" : s.source_type === "hashtag" ? "хештег" : "лайки"}]</b> {s.value} (интервал: {s.interval_minutes} мин.) {s.last_error && <span className="text-rose-400">Ошибка: {s.last_error}</span>}</span>
                   <button
                     onClick={() => setConfirmDialog({
                       title: `Удалить источник ${s.value}?`,
