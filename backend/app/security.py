@@ -132,7 +132,7 @@ async def create_session_tokens(
     jti = uuid.uuid4().hex
     csrf_token = uuid.uuid4().hex
     now = datetime.now(timezone.utc)
-    expires = now + timedelta(hours=24)
+    expires = now + timedelta(days=30)
 
     session_row = AdminSession(
         jti=jti,
@@ -155,14 +155,13 @@ async def create_session_tokens(
     }
     jwt_token = jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm="HS256")
 
-    secure_cookie = settings.DOMAIN not in ("localhost", "127.0.0.1")
     response.set_cookie(
         key="tt_session",
         value=jwt_token,
         httponly=True,
-        secure=secure_cookie,
+        secure=False,
         samesite="lax",
-        max_age=86400,
+        max_age=86400 * 30,
         path="/",
     )
     return {

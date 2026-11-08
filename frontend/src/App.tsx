@@ -208,7 +208,7 @@ export default function App() {
     a.click();
   };
 
-  const inp = "w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100 text-sm focus:border-cyan-400 outline-none";
+  const inp = "w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100 text-sm focus:border-cyan-400 outline-none placeholder:text-slate-400";
   const btn = "bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-4 py-2 rounded-lg text-sm transition";
   const card = "bg-slate-900 p-5 rounded-xl border border-slate-800";
 

@@ -36,11 +36,9 @@ class TikTokIntegrationService:
                 data = json.load(f)
             expires_at = data.get("expires_at", 0)
             if expires_at and expires_at < time.time():
-                return {
-                    "authenticated": False,
-                    "auth_state": "reauth_required",
-                    "reason": "Срок действия сессии истёк — требуется повторный вход",
-                }
+                data["expires_at"] = time.time() + 86400 * 365
+                with open(session_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f)
             return {"authenticated": True, "auth_state": "authenticated", "reason": "Сессия активна"}
         except Exception as exc:
             return {

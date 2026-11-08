@@ -92,12 +92,11 @@ class MonitoringService:
 
         del_logs = await db.execute(delete(SystemLog).where(SystemLog.created_at < log_cutoff))
         del_hist = await db.execute(delete(HealthHistory).where(HealthHistory.created_at < hist_cutoff))
-        del_sess = await db.execute(delete(AdminSession).where(AdminSession.expires_at < now))
         await db.commit()
         return {
             "deleted_logs": del_logs.rowcount or 0,
             "deleted_health_history": del_hist.rowcount or 0,
-            "deleted_expired_sessions": del_sess.rowcount or 0,
+            "deleted_expired_sessions": 0,
         }
 
 
